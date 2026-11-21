@@ -16,19 +16,23 @@
   const loadView = () => {
     try {
       const v = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-      if (v && Array.isArray(v.kinds)) return { filter: { ...AddOnLogic.emptyFilter(), ...v.filter, kinds: v.kinds }, tiny: !!v.tiny };
+      if (v && Array.isArray(v.kinds)) return { filter: { ...AddOnLogic.emptyFilter(), ...v.filter, kinds: v.kinds }, tiny: !!v.tiny, grey: !!v.grey, tint: Number.isFinite(v.tint) ? v.tint : 0 };
     } catch { /* storage unavailable or corrupt: start fresh */ }
-    return { filter: AddOnLogic.emptyFilter(), tiny: false };
+    return { filter: AddOnLogic.emptyFilter(), tiny: false, grey: false, tint: 0 };
   };
   const view = loadView();
   const saveView = () => {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify({ filter: { query: view.filter.query, color: view.filter.color }, kinds: view.filter.kinds, tiny: view.tiny })); }
+    try { localStorage.setItem(STORE_KEY, JSON.stringify({ filter: { query: view.filter.query, color: view.filter.color }, kinds: view.filter.kinds, tiny: view.tiny, grey: view.grey, tint: view.tint })); }
     catch { /* not fatal */ }
   };
   // Pinned (always wide) channels, per session.
   const pinKey = (s) => `${STORE_KEY}.pins.${s.uid}`;
   const loadPins = (s) => { try { return new Set(JSON.parse(localStorage.getItem(pinKey(s)) || '[]')); } catch { return new Set(); } };
   const savePins = (s, pins) => { try { localStorage.setItem(pinKey(s), JSON.stringify([...pins])); } catch { /* not fatal */ } };
+  // Folders collapsed here, and mix snapshots, per session.
+  const setKey = (s, what) => `${STORE_KEY}.${what}.${s.uid}`;
+  const loadJson = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; } };
+  const saveJson = (key, v) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* not fatal */ } };
 
   // ---- Toolbar -------------------------------------------------------------------------------
   const KIND_LABELS = { audio: 'Audio', instrument: 'Inst', bus: 'Bus', cue: 'Cue' };
@@ -59,6 +63,35 @@
     $('density').classList.toggle('on', view.tiny);
   };
   $('density').onclick = () => { view.tiny = !view.tiny; applyDensity(); saveView(); };
+  // Theme: dark (black background) or grey (a lighter grey background), kept with the view.
+  const applyTheme = () => {
+    document.body.classList.toggle('grey', view.grey);
+    $('theme').title = 'Look: theme (dark or grey) and how much colour fills each strip';
+    $('theme').classList.toggle('on', view.grey);
+  };
+  const applyTint = () => { document.body.style.setProperty('--tint', String((view.tint ?? 0) / 100)); };
+  $('theme').onclick = () => {
+    const p = openPop($('theme'), 'menu look');
+    p.el.innerHTML = `<div class="chead">Theme</div>
+      <div class="seg"><button data-t="dark">Dark</button><button data-t="grey">Grey</button></div>
+      <div class="chead">Strip colour <span class="tv"></span></div>
+      <input class="tint" type="range" min="0" max="60" step="1">
+      <div class="thint">How much of each channel's colour fills its strip</div>`;
+    const seg = p.el.querySelectorAll('.seg button');
+    const mark = () => seg.forEach((b) => b.classList.toggle('on', (b.dataset.t === 'grey') === view.grey));
+    seg.forEach((b) => { b.onclick = () => { view.grey = b.dataset.t === 'grey'; applyTheme(); saveView(); mark(); }; });
+    mark();
+    const r = p.el.querySelector('.tint'), tv = p.el.querySelector('.tv');
+    r.value = String(view.tint ?? 0);
+    const show = () => { tv.textContent = `${r.value}%`; };
+    show();
+    r.oninput = () => { view.tint = Number(r.value); applyTint(); show(); };
+    r.onchange = () => saveView();
+    r.onkeydown = (e) => e.stopPropagation();
+    p.place();
+  };
+  applyTint();
+  applyTheme();
   applyDensity();
 
   const renderToolbar = () => {
@@ -76,6 +109,12 @@
   let filterChanged = () => { renderToolbar(); saveView(); };
   let collapsedId = null;             // a selected channel the user closed here
   let pins = new Set();               // channels kept wide
+  let foldedFolders = new Set();             // folders collapsed here (their contents hidden)
+  let nestDepth = 0;                  // deepest folder nesting among the shown strips
+  let onFold = () => {};
+  let groups = {};                    // fader groups: channel uid -> 1..8, per session
+  let groupsOn = true;                // Groups button: off suspends every group
+  let onGroupPick = () => {};
   let onNameClick = () => {};
   let onPinClick = () => {};
   let onMove = async () => {};
@@ -120,12 +159,37 @@
     await s.ready();
     if (s !== built) return;
     pins = loadPins(s);
+    foldedFolders = new Set(loadJson(setKey(s, 'foldedFolders'), []));
+    onFold = (folder) => {
+      if (foldedFolders.has(folder.id)) foldedFolders.delete(folder.id); else foldedFolders.add(folder.id);
+      saveJson(setKey(s, 'foldedFolders'), [...foldedFolders]);
+      void group.whenIdle(render);
+    };
+    bindSnapshots(s);
     collapsedId = null;
     say(s.name.value ?? '');
     page.on(s.name, () => say(s.name.value ?? ''));
 
     bindTransport(s);
 
+    // Fader groups 1-8: the faders of a group move together by the same dB. Option/Alt while
+    // dragging moves one alone; the Groups button suspends them all.
+    groups = loadJson(setKey(s, 'groups'), {});
+    const renderGroupsBtn = () => {
+      const b = $('link');
+      b.classList.toggle('on', groupsOn);
+      b.classList.toggle('off', !groupsOn);
+      b.textContent = groupsOn ? 'Groups' : 'Groups off';
+      b.title = groupsOn ? 'Fader groups are on: faders in the same group move together. Click to suspend every group.' : 'Fader groups are suspended: every fader moves alone. Click to turn them back on.';
+      document.body.classList.toggle('groups-off', !groupsOn);
+    };
+    $('link').onclick = () => { groupsOn = !groupsOn; renderGroupsBtn(); };
+    renderGroupsBtn();
+    onGroupPick = (ch, g) => {
+      if (g) groups[ch.id] = g; else delete groups[ch.id];
+      saveJson(setKey(s, 'groups'), groups);
+      void group.whenIdle(render);
+    };
     $('clearSolo').onclick = () => AddOnLogic.clearSolos(s).catch(report);
     $('unmute').onclick = () => AddOnLogic.unmuteAll(s).catch(report);
 
@@ -150,14 +214,16 @@
 
     const renderSelection = () => {
       const sel = new Set(s.context.selectionTracks.value ?? []);
-      for (const el of document.querySelectorAll('.strip')) el.classList.toggle('selected', sel.has(el.dataset.id));
+      for (const el of document.querySelectorAll('.strip')) {
+        el.classList.toggle('selected', sel.has(el.dataset.id));
+      }
     };
 
     // Which strips are wide: the selected one (unless closed here) and the pinned ones.
     let selectedWide = null;
     let renderedKey = '';
     const selectionChanged = () => {
-      const next = AddOnLogic.expandedId(s, AddOnLogic.filtered(s, view.filter), collapsedId);
+      const next = AddOnLogic.expandedId(s, AddOnLogic.shown(s, view.filter, foldedFolders), collapsedId);
       if (next !== selectedWide) void group.whenIdle(render);
       else renderSelection();
     };
@@ -165,7 +231,16 @@
     page.on(s.context.lastSelectedTrack, selectionChanged);
 
     // Name click: select in LUNA (opens wide), or close/reopen the selected one here.
-    onNameClick = (ch) => {
+    onNameClick = (ch, e) => {
+      // Cmd/Ctrl-click adds or removes a channel, Shift-click a run of them, as in LUNA.
+      const toggle = !!(e && (e.metaKey || e.ctrlKey)), range = !!(e && e.shiftKey);
+      if (toggle || range) {
+        const cur = s.context.selectionTracks.value ?? [];
+        const next = AddOnLogic.clickSelection(cur, s.context.lastSelectedTrack.value ?? cur.at(-1), ch, AddOnLogic.shown(s, view.filter, foldedFolders), { toggle, range });
+        collapsedId = null;
+        s.context.selectionTracks.set(next).then(() => (next.includes(ch.id) ? s.context.lastSelectedTrack.set(ch.id) : undefined)).catch(report);
+        return;
+      }
       if (pins.has(ch.id)) { AddOnLogic.select(s, ch).catch(report); return; }
       const selected = (s.context.selectionTracks.value ?? []).includes(ch.id);
       if (!selected) { collapsedId = null; AddOnLogic.select(s, ch).catch(report); return; }
@@ -195,9 +270,10 @@
 
     // Strips: rebuilt through whenIdle, so never mid-drag.
     const render = async () => {
-      const list = AddOnLogic.filtered(s, view.filter);
+      const list = AddOnLogic.shown(s, view.filter, foldedFolders);
       await Promise.all(list.map((ch) => Promise.all([ch.loadStrip(), ch.controls.load()]).catch(() => undefined)));
       const selId = AddOnLogic.expandedId(s, list, collapsedId);
+      nestDepth = Math.max(0, ...list.map((ch) => AddOnLogic.ancestors(s, ch).length + (ch.isFolder ? 1 : 0)));
       const wideSet = new Set(list.filter((ch) => ch.id === selId || pins.has(ch.id)).map((ch) => ch.id));
       await Promise.all(list.filter((ch) => wideSet.has(ch.id)).map(loadWide));
       if (s !== built) return;
@@ -264,14 +340,14 @@
 
     // Move a channel one step left or right in LUNA, among the channels this view shows.
     onMove = async (ch, dir) => {
-      const shown = new Set(AddOnLogic.filtered(s, view.filter).map((c) => c.id));
+      const shown = new Set(AddOnLogic.shown(s, view.filter, foldedFolders).map((c) => c.id));
       try {
         const moved = await AddOnLogic.move(s, ch, dir, shown);
         if (!moved) return;
         flashId = ch.id;
       } catch (e) { report(e); }
     };
-    canMove = (ch, dir) => !!AddOnLogic.moveTarget(s, ch, dir, new Set(AddOnLogic.filtered(s, view.filter).map((c) => c.id)));
+    canMove = (ch, dir) => !!AddOnLogic.moveTarget(s, ch, dir, new Set(AddOnLogic.shown(s, view.filter, foldedFolders).map((c) => c.id)));
     // Option + ←/→ moves the channel selected in LUNA.
     const onKey = (e) => {
       if (!e.altKey || e.metaKey || e.ctrlKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
@@ -310,6 +386,7 @@
       <div class="peak"></div>
       <div class="lane"><div class="bars"></div><div class="ticks"></div><div class="hline"></div><div class="cap"></div></div>
       <div class="db"></div>
+      <button class="grp" type="button"></button>
       <div class="buttons"></div>`;
     el.innerHTML = wide ? `
       <div class="color"></div>
@@ -327,8 +404,35 @@
       <div class="head"><div class="name"></div></div>
       ${faderCol}`;
 
+    // Folder nesting: one band per level, in each folder's colour, above the strip's own colour,
+    // so a folder and everything inside it share a bracket. A folder has a fold button.
+    const chain = AddOnLogic.ancestors(s, ch);
+    if (ch.isFolder) chain.push(ch);
+    if (nestDepth > 0 && info.kind !== 'master') {
+      const nest = document.createElement('div');
+      nest.className = 'nest';
+      for (let i = 0; i < nestDepth; i++) {
+        const band = document.createElement('i');
+        const f = chain[i];
+        if (f) {
+          band.style.background = AddOnLogic.cssColor(f.color.value) ?? '#6a6a74';
+          band.title = `In ${f.name.value ?? 'folder'}`;
+          if (f === ch) band.className = 'start';
+        }
+        nest.append(band);
+      }
+      el.prepend(nest);
+    }
     const colorBar = el.querySelector('.color');
-    const renderColor = () => { colorBar.style.background = AddOnLogic.cssColor(ch.color.value) ?? (info.kind === 'master' ? 'var(--accent)' : '#555'); };
+    const renderColor = () => {
+      const c = AddOnLogic.cssColor(ch.color.value);
+      colorBar.style.background = c ?? (info.kind === 'master' ? 'var(--accent)' : '#555');
+      if (c) el.style.setProperty('--c', c); else el.style.removeProperty('--c');   // the strip's tint
+    };
+    if (info.kind !== 'master') {
+      colorBar.title = 'Click to change the colour (all selected channels when several are selected)';
+      colorBar.onclick = (e) => { e.stopPropagation(); openColorMenu(colorBar, ch); };
+    }
     renderColor();
     bindings.on(ch.color, renderColor);
 
@@ -336,9 +440,21 @@
     const renderName = () => { const n = ch.name.value ?? ch.id; name.textContent = n; name.title = `${n} (${info.kind})`; };
     renderName();
     bindings.on(ch.name, renderName);
+    if (ch.isFolder) {
+      const shut = foldedFolders.has(ch.id);
+      const n = AddOnLogic.folderSize(s, ch);
+      const fold = document.createElement('button');
+      fold.className = `fold${shut ? ' shut' : ''}`;
+      fold.textContent = shut ? `▸ ${n}` : '▾';
+      fold.title = shut ? `Show the ${n} channels inside ${ch.name.value ?? 'this folder'}` : `Hide what is inside ${ch.name.value ?? 'this folder'}`;
+      fold.onclick = (e) => { e.stopPropagation(); onFold(ch); };
+      el.querySelector('.head').append(fold);
+      el.classList.toggle('shut', shut);
+    }
     if (info.kind !== 'master') {
-      name.onclick = () => onNameClick(ch);
-      name.title += wide && !pinned ? ' — click to narrow' : ' — click to select';
+      name.onclick = (e) => onNameClick(ch, e);
+      name.oncontextmenu = (e) => { e.preventDefault(); openColorMenu(e, ch); };
+      name.title += `${wide && !pinned ? ' — click to narrow' : ' — click to select'}; Cmd/Ctrl-click or Shift-click to select several`;
       const pin = document.createElement('button');
       pin.className = `pin${pinned ? ' on' : ''}`;
       pin.innerHTML = PIN_SVG;
@@ -398,6 +514,21 @@
     // The cap: a full-lane layer whose top edge is the line, moved by transform only.
     const placeCap = (v) => { cap.style.transform = `translateY(${((1 - Math.min(1, Math.max(0, v))) * 100).toFixed(2)}%)`; };
     placeCap(ch.gain.normalized.value ?? 0);
+    // Group chip: which fader group (1-8) the channel is in; click to choose.
+    const grp = el.querySelector('.grp');
+    if (grp) {
+      const g = groups[ch.id];
+      if (info.kind === 'cue' || info.kind === 'master') grp.remove();
+      else {
+        grp.textContent = g ? String(g) : '';
+        grp.classList.toggle('set', !!g);
+        if (g) grp.style.setProperty('--g', AddOnLogic.GROUP_COLORS[g - 1]);
+        grp.title = g ? `Fader group ${g}: moves with the other channels of group ${g}. Click to change.` : 'No fader group. Click to put this channel in a group (1-8).';
+        if (g) el.style.setProperty('--g', AddOnLogic.GROUP_COLORS[g - 1]);
+        el.classList.toggle('grouped', !!g);
+        grp.onclick = (e) => { e.stopPropagation(); openGroupMenu(grp, ch); };
+      }
+    }
     const db = el.querySelector('.db');
     const renderDb = () => { db.textContent = ch.gain.display.value ?? ''; };
     renderDb();
@@ -406,11 +537,37 @@
     // Dragging anywhere on the lane moves the cap by the same distance (no jump on click), as
     // one undo step; double-click resets to LUNA's default, arrows nudge. pixelsPerUnit is the
     // lane's height, known once the strip is on screen: attach() runs after it is inserted.
+    // Link: dragging a selected channel's fader moves the other selected ones by the same dB.
+    let linked = null;   // while dragging: { from, others: [{ gain, taper, from }] }
+    const startLink = (e) => {
+      linked = null;
+      if (!groupsOn || e?.altKey) return;
+      const others = AddOnLogic.groupMates(s, groups, ch).map((c) => ({ gain: c.gain, taper: AddOnLogic.taperOf(c), from: c.gain.normalized.value ?? 0 }));
+      if (!others.length) return;
+      for (const o of others) o.gain.begin();
+      linked = { from: ch.gain.normalized.value ?? 0, others };
+    };
+    const endLink = () => { if (linked) for (const o of linked.others) o.gain.end(); linked = null; };
+    const onFader = (v) => {
+      placeCap(v);
+      if (!linked) return;
+      for (const o of linked.others) o.gain.normalized.set(AddOnLogic.linkedValue(taper, linked.from, v, o.taper, o.from)).catch(report);
+    };
+    // Reset to 0 dB: Option/Alt-click or double-click, for the whole group when it has one.
+    let downAt = null;
+    lane.addEventListener('pointerdown', (e) => { downAt = { x: e.clientX, y: e.clientY }; }, true);
+    lane.addEventListener('click', (e) => {
+      const still = downAt && Math.abs(e.clientX - downAt.x) < 3 && Math.abs(e.clientY - downAt.y) < 3;
+      if (e.altKey && still) AddOnLogic.resetGrouped(s, groups, ch, groupsOn).catch(report);
+    });
+    lane.addEventListener('dblclick', () => AddOnLogic.resetGrouped(s, groups, ch, groupsOn).catch(report));
     const attach = () => {
       Luna.bindDrag(lane, ch.gain, {
         bindings, label: `${ch.name.value ?? ch.id} volume`, axis: 'y',
-        pixelsPerUnit: Math.max(60, lane.clientHeight), step: 0.005, render: placeCap,
-        onBegin: () => lane.classList.add('dragging'), onEnd: () => lane.classList.remove('dragging'), onError: report,
+        pixelsPerUnit: Math.max(60, lane.clientHeight), step: 0.005, render: onFader,
+        onBegin: (e) => { lane.classList.add('dragging'); startLink(e); },
+        onEnd: () => { lane.classList.remove('dragging'); endLink(); },
+        onError: report, reset: false,
       });
     };
 
@@ -453,13 +610,13 @@
     if (mute) {
       const b = document.createElement('button'); b.className = 'mute'; b.textContent = 'M'; b.title = 'Mute';
       const r = () => b.classList.toggle('on', mute.on); r(); bindings.on(mute.real, r);
-      b.onclick = () => mute.toggle().catch(report);
+      b.onclick = (e) => AddOnLogic.toggleGrouped(s, groups, ch, 'mute', groupsOn && !e.altKey).catch(report);
       buttons.append(b);
     }
     if (solo) {
       const b = document.createElement('button'); b.className = 'solo'; b.textContent = 'S'; b.title = 'Solo';
       const r = () => b.classList.toggle('on', solo.on); r(); bindings.on(solo.real, r);
-      b.onclick = () => solo.toggle().catch(report);
+      b.onclick = (e) => AddOnLogic.toggleGrouped(s, groups, ch, 'solo', groupsOn && !e.altKey).catch(report);
       buttons.append(b);
     }
     el.attach = attach;
@@ -495,7 +652,48 @@
         (opening ? slot.openEditor() : slot.closeEditor()).catch((e) => report(`${name} (${slot.id}): ${opening ? 'could not open' : 'could not close'} — ${e?.code ?? ''} ${e?.message ?? e}`));
       };
       row.append(pwr, nm);
+      // Effect inserts can change places: drag one onto another, or Move up / down.
+      const used = ch.effectSlots.filter((sl) => !sl.isEmpty);
+      const pos = used.indexOf(slot);
+      const move = (to) => {
+        say(`Moving ${name}…`);
+        AddOnLogic.movePlugin(session, ch, pos, to).then(() => say(`Moved ${name}`)).catch(report);
+      };
+      if (pos >= 0 && used.length > 1) {
+        row.draggable = true;
+        row.dataset.pos = String(pos);
+        row.ondragstart = (e) => { e.dataTransfer.setData('text/x-cm-insert', `${ch.id}:${pos}`); e.dataTransfer.effectAllowed = 'move'; row.classList.add('dragging'); };
+        row.ondragend = () => row.classList.remove('dragging');
+        row.ondragover = (e) => { if ([...e.dataTransfer.types].includes('text/x-cm-insert')) { e.preventDefault(); row.classList.add('dropto'); } };
+        row.ondragleave = () => row.classList.remove('dropto');
+        row.ondrop = (e) => {
+          e.preventDefault(); row.classList.remove('dropto');
+          const [cid, p] = (e.dataTransfer.getData('text/x-cm-insert') || '').split(':');
+          if (cid !== ch.id || Number(p) === pos) return;
+          const name0 = used[Number(p)] ? AddOnLogic.slotName(used[Number(p)], pluginName) : '';
+          say(`Moving ${name0}…`);
+          AddOnLogic.movePlugin(session, ch, Number(p), pos).then(() => say(`Moved ${name0}`)).catch(report);
+        };
+      }
+      row.oncontextmenu = (e) => {
+        e.preventDefault();
+        openMenu(e, [
+          ...(pos > 0 ? [{ label: 'Move up', run: () => move(pos - 1) }] : []),
+          ...(pos >= 0 && pos < used.length - 1 ? [{ label: 'Move down', run: () => move(pos + 1) }] : []),
+          { label: 'Replace…', run: () => { if (slot.editorOpen.value === true) slot.closeEditor({ timeoutMs: 3000 }).catch(() => undefined); openPluginPicker(nm, ch, slot, name); } },
+          { label: slot.in.value === false ? 'Turn on' : 'Bypass', run: () => slot.setIn(slot.in.value === false).catch(report) },
+          { label: 'Remove', danger: true, run: () => { say(`Removing ${name}…`); AddOnLogic.removePlugin(slot).then(() => say(`Removed ${name}`)).catch(report); } },
+        ]);
+      };
       insBox.append(row);
+    }
+    const free = AddOnLogic.freeEffectSlot(ch);
+    if (free) {
+      const add = document.createElement('button');
+      add.className = 'addrow'; add.textContent = '+ Plugin';
+      add.title = 'Load a plugin in the next free insert';
+      add.onclick = () => openPluginPicker(add, ch, free);
+      insBox.append(add);
     }
 
     drawEq(ch, el, bindings);
@@ -522,8 +720,284 @@
       const renderP = () => pre.classList.toggle('on', send.preFader.on);
       renderP(); bindings.on(send.preFader.real, renderP);
       pre.onclick = () => send.preFader.toggle().catch(report);
+      row.oncontextmenu = (e) => {
+        e.preventDefault();
+        openMenu(e, [
+          { label: 'Change bus…', run: () => openBusPicker(row, ch, send) },
+          { label: 'Remove', danger: true, run: () => send.unassign().then(() => say(`Removed send to ${to}`)).catch(report) },
+        ]);
+      };
       sendBox.append(row);
     }
+    if (AddOnLogic.freeSend(ch)) {
+      const add = document.createElement('button');
+      add.className = 'addrow'; add.textContent = '+ Send';
+      add.title = 'Send this channel to a bus (starts at -inf)';
+      add.onclick = () => openBusPicker(add, ch);
+      sendBox.append(add);
+    }
+  }
+
+  // ---- Mix snapshots ---------------------------------------------------------------------------
+  // Faders, mutes, solos, pans and send levels, saved under a name and put back with a click (one
+  // undo step). Kept on this computer, per session.
+  let snapState = null;   // { s, list: [{ name, at, mix }], current }
+  function bindSnapshots(s) {
+    snapState = { s, list: loadJson(setKey(s, 'snaps'), []), current: null };
+    $('snaps').onclick = () => openSnapshots($('snaps'));
+  }
+  const saveSnaps = () => saveJson(setKey(snapState.s, 'snaps'), snapState.list);
+  async function openSnapshots(anchor) {
+    const { s } = snapState;
+    const p = openPop(anchor, 'picker snaps');
+    p.el.innerHTML = '<div class="pnone">Reading the mix…</div>';
+    p.place();
+    try { await AddOnLogic.loadForSnapshot(s); } catch (e) { p.close(); report(e); return; }
+    if (pop !== p) return;
+    const draw = () => {
+      p.el.innerHTML = '<div class="snapnew"><input class="psearch" spellcheck="false" maxlength="40"><button class="snapsave">Save</button></div><div class="plist"></div>';
+      const input = p.el.querySelector('input');
+      input.placeholder = `Name, e.g. Mix ${snapState.list.length + 1}`;
+      const save = () => {
+        const name = input.value.trim() || `Mix ${snapState.list.length + 1}`;
+        const at = Date.now();
+        const existing = snapState.list.find((x) => x.name === name);
+        if (existing) { existing.mix = AddOnLogic.captureMix(s); existing.at = at; } else snapState.list.push({ name, at, mix: AddOnLogic.captureMix(s) });
+        snapState.current = name;
+        saveSnaps();
+        say(`Saved snapshot “${name}”`);
+        draw();
+      };
+      p.el.querySelector('.snapsave').onclick = save;
+      input.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); save(); } };
+      const list = p.el.querySelector('.plist');
+      if (!snapState.list.length) list.innerHTML = '<div class="pnone">No snapshots yet. Type a name and Save to keep the mix as it is now.</div>';
+      for (const snap of snapState.list) {
+        const diff = AddOnLogic.mixDiff(s, snap.mix);
+        const row = document.createElement('div');
+        row.className = `snap${snap.name === snapState.current && diff === 0 ? ' current' : ''}`;
+        row.innerHTML = '<button class="snapgo"><span class="pl"></span><span class="ps"></span></button><button class="snapup" title="Update: save the mix as it is now under this name">⟳</button><button class="snapdel" title="Delete">✕</button>';
+        row.querySelector('.pl').textContent = snap.name;
+        row.querySelector('.ps').textContent = diff === 0 ? 'as now' : `${diff} change${diff === 1 ? '' : 's'}`;
+        row.querySelector('.snapgo').title = diff === 0 ? 'The mix is as this snapshot has it' : `Recall “${snap.name}” (${diff} values change; Cmd+Z undoes it)`;
+        row.querySelector('.snapgo').onclick = async () => {
+          try {
+            const n = await AddOnLogic.recallMix(s, snap.mix, snap.name);
+            snapState.current = snap.name;
+            say(n ? `Recalled “${snap.name}”` : `“${snap.name}” is already the mix`);
+            setTimeout(draw, 300);
+          } catch (e) { report(e); }
+        };
+        row.querySelector('.snapup').onclick = () => { snap.mix = AddOnLogic.captureMix(s); snap.at = Date.now(); snapState.current = snap.name; saveSnaps(); say(`Updated “${snap.name}”`); draw(); };
+        row.querySelector('.snapdel').onclick = () => { snapState.list = snapState.list.filter((x) => x !== snap); saveSnaps(); draw(); };
+        list.append(row);
+      }
+      p.place();
+      input.focus();
+    };
+    draw();
+  }
+
+  // ---- Pop-ups: right-click menus, the plugin browser and the bus list ---------------------------
+  // One at a time, in the page (not inside a strip, which can be rebuilt under it). Esc, a click
+  // outside or picking something closes it.
+  let pop = null;
+  function closePop() { pop?.close(); }
+  function openPop(at, cls) {
+    closePop();
+    const el = document.createElement('div');
+    el.className = `pop ${cls}`;
+    document.body.append(el);
+    const place = () => {
+      const r = at instanceof Event ? { left: at.clientX, right: at.clientX, top: at.clientY, bottom: at.clientY } : at.getBoundingClientRect();
+      const w = el.offsetWidth, h = el.offsetHeight, vw = window.innerWidth, vh = window.innerHeight;
+      const left = Math.max(4, Math.min(r.left, vw - w - 4));
+      const below = r.bottom + 2, above = r.top - h - 2;
+      el.style.left = `${left}px`;
+      el.style.top = `${below + h <= vh - 4 || above < 4 ? Math.max(4, Math.min(below, vh - h - 4)) : above}px`;
+    };
+    const onDown = (e) => { if (!el.contains(e.target)) close(); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+    const close = () => {
+      if (pop?.el !== el) return;
+      pop = null;
+      el.remove();
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('blur', close);
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('blur', close);
+    pop = { el, close, place };
+    return pop;
+  }
+
+  function openColorMenu(at, ch) {
+    const p = openPop(at, 'menu colors');
+    const sel = session.context.selectionTracks.value ?? [];
+    const many = sel.length > 1 && sel.includes(ch.id);
+    const head = document.createElement('div');
+    head.className = 'chead';
+    head.textContent = many ? `Colour for ${sel.length} channels` : `Colour for ${ch.name.value ?? ''}`;
+    const grid = document.createElement('div');
+    grid.className = 'cgrid';
+    for (const argb of AddOnLogic.PALETTE) {
+      const b = document.createElement('button');
+      b.className = `csw${(ch.color.value >>> 0) === (argb >>> 0) ? ' cur' : ''}`;
+      b.style.background = AddOnLogic.cssColor(argb);
+      b.title = AddOnLogic.cssColor(argb);
+      b.onclick = () => { p.close(); AddOnLogic.setColor(session, ch, argb).then((n) => say(n > 1 ? `Coloured ${n} channels` : `Coloured ${ch.name.value ?? ''}`)).catch(report); };
+      grid.append(b);
+    }
+    p.el.append(head, grid);
+    p.place();
+    grid.querySelector('.cur, button')?.focus();
+  }
+
+  function openGroupMenu(anchor, ch) {
+    const counts = AddOnLogic.groupCounts(session, groups);
+    const p = openPop(anchor, 'menu groups');
+    const cur = groups[ch.id] ?? 0;
+    const add = (g) => {
+      const b = document.createElement('button');
+      b.className = `gitem${g === cur ? ' cur' : ''}`;
+      b.innerHTML = '<i></i><span class="gl"></span><span class="gn"></span>';
+      if (g) b.firstChild.style.background = AddOnLogic.GROUP_COLORS[g - 1];
+      b.querySelector('.gl').textContent = g ? `Group ${g}` : 'No group';
+      b.querySelector('.gn').textContent = g && counts[g] ? String(counts[g]) : '';
+      b.onclick = () => { p.close(); onGroupPick(ch, g); };
+      p.el.append(b);
+    };
+    for (let g = 1; g <= 8; g++) add(g);
+    add(0);
+    p.place();
+    p.el.querySelector('.cur, button')?.focus();
+  }
+
+  function openMenu(e, items) {
+    const p = openPop(e, 'menu');
+    for (const it of items) {
+      const b = document.createElement('button');
+      b.textContent = it.label;
+      if (it.danger) b.className = 'danger';
+      b.onclick = () => { p.close(); it.run(); };
+      p.el.append(b);
+    }
+    p.place();
+    p.el.querySelector('button')?.focus();
+  }
+
+  /**
+   * A searchable list: type to narrow, arrows to move, Enter or a click to pick. `groups` is
+   * [{ title, rows }]; each row { label, sub, value }. `extra` adds a row at the end.
+   */
+  function pickList(p, { placeholder, groups, onPick, empty = 'Nothing found' }) {
+    p.el.innerHTML = '<input class="psearch" type="search" spellcheck="false"><div class="plist"></div>';
+    const input = p.el.querySelector('input');
+    const list = p.el.querySelector('.plist');
+    input.placeholder = placeholder;
+    let rows = [];
+    let active = 0;
+    const mark = () => rows.forEach((b, i) => b.classList.toggle('active', i === active));
+    const draw = () => {
+      list.replaceChildren(); rows = []; active = 0;
+      for (const g of groups(input.value)) {
+        if (!g.rows.length) continue;
+        if (g.title) { const h = document.createElement('div'); h.className = 'pgroup'; h.textContent = g.title; list.append(h); }
+        for (const r of g.rows) {
+          const b = document.createElement('button');
+          b.className = 'pitem';
+          b.innerHTML = '<span class="pl"></span><span class="ps"></span>';
+          b.firstChild.textContent = r.label;
+          b.lastChild.textContent = r.sub ?? '';
+          const i = rows.length;
+          b.onmouseenter = () => { active = i; mark(); };
+          b.onclick = () => { if (!r.keepOpen) p.close(); onPick(r.value); };
+          rows.push(b); list.append(b);
+        }
+      }
+      if (!rows.length) { const n = document.createElement('div'); n.className = 'pnone'; n.textContent = empty; list.append(n); }
+      mark();
+    };
+    input.oninput = draw;
+    input.onkeydown = (e) => {
+      e.stopPropagation();   // typing here is not a shortcut
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!rows.length) return;
+        active = (active + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+        mark(); rows[active].scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'Enter') { e.preventDefault(); rows[active]?.click(); }
+    };
+    draw();
+    p.place();
+    input.focus();
+    return { redraw: draw, input };
+  }
+
+  // Plugin browser: the plugins LUNA would offer in that slot, by category; type to search.
+  const pluginCache = new Map();   // `${channel}:${slot}` -> rows, kept for a minute
+  async function openPluginPicker(anchor, ch, slot, replacing = null) {
+    const p = openPop(anchor, 'picker');
+    p.el.innerHTML = '<div class="pnone">Loading plugins…</div>';
+    p.place();
+    const key = `${ch.id}:${slot.id}`;
+    let rows = pluginCache.get(key)?.at > Date.now() - 60000 ? pluginCache.get(key).rows : null;
+    if (!rows) {
+      try { rows = await AddOnLogic.pluginChoices(luna, slot); } catch (e) { p.close(); report(e); return; }
+      pluginCache.set(key, { rows, at: Date.now() });
+    }
+    if (pop !== p) return;   // closed while loading
+    const chName = ch.name.value ?? '';
+    pickList(p, {
+      placeholder: replacing ? `Replace ${replacing} with…` : `Plugin for ${chName}…`,
+      empty: 'No plugin matches',
+      groups: (text) => AddOnLogic.groupPlugins(rows, text).map((g) => ({ title: g.title, rows: g.rows.map((r) => ({ label: r.name, sub: r.manufacturer, value: r })) })),
+      onPick: async (r) => {
+        say(`Loading ${r.name} on ${chName}…`);
+        try { await AddOnLogic.addPlugin(ch, r.pluginId, slot); say(`${r.name} on ${chName}`); } catch (e) { report(e); }
+      },
+    });
+  }
+
+  // Bus list for a new send (or to move one): every aux bus, plus "New bus…" to make one.
+  function openBusPicker(anchor, ch, send = null) {
+    const s = session;
+    const p = openPop(anchor, 'picker');
+    const chName = ch.name.value ?? '';
+    const NEW = {};
+    let naming = false;   // after "New bus…" with nothing typed: the box asks for the name
+    const list = pickList(p, {
+      placeholder: send ? 'Move send to…' : `Send ${chName} to…`,
+      empty: 'No bus matches',
+      groups: (text) => {
+        if (naming) return [{ title: null, rows: [{ label: text.trim() ? `Create bus “${text.trim()}”` : 'Type the name, then Enter', sub: '', value: NEW, keepOpen: !text.trim() }] }];
+        const t = text.trim().toLowerCase();
+        const buses = AddOnLogic.sendTargets(s, ch).filter((b) => (b.name.value ?? '').toLowerCase().includes(t));
+        const make = { label: text.trim() ? `New bus “${text.trim()}”` : 'New bus…', sub: '', value: NEW, keepOpen: !text.trim() };
+        return [{ title: null, rows: [...buses.map((b) => ({ label: b.name.value ?? b.id, sub: '', value: b })), make] }];
+      },
+      onPick: async (b) => {
+        let target = b;
+        if (b === NEW) {
+          const name = list.input.value.trim();
+          if (!name) { naming = true; list.input.placeholder = 'Name of the new bus'; list.redraw(); list.input.focus(); return; }
+          p.close();
+          target = { newName: name };
+        }
+        try {
+          if (send) {
+            const bus = target.newName !== undefined ? await s.newBus({ name: target.newName }) : target;
+            await send.retarget(bus.id, 'Compact Mixer: change send');
+            say(`${chName} now sends to ${bus.name.value ?? ''}`);
+          } else {
+            const { bus } = await AddOnLogic.addSend(s, ch, target);
+            say(`${chName} sends to ${bus.name.value ?? ''} (at -inf: raise it with its fader)`);
+          }
+        } catch (e) { report(e); }
+      },
+    });
   }
 
   // Pan: only on wide strips. One slider for mono, two for stereo. Drag = one undo step,
@@ -694,6 +1168,37 @@
     $('play').onclick = () => t.toggle().catch(report);
     $('rec').onclick = () => t.toggleRecord().catch(report);
     $('loop').onclick = () => t.looping.set(!t.looping.value).catch(report);
+
+    // A/B, shared with the AB Monitor Add On through LUNA itself (the two buses' mutes).
+    let abCue;
+    let abOffs = [];
+    const renderAB = () => {
+      const st = AddOnLogic.abState(s, abCue);
+      const ready = !!abCue;
+      for (const [id, x] of [['abA', 'A'], ['abB', 'B']]) {
+        $(id).disabled = !ready;
+        $(id).classList.toggle('on', ready && (st === x || st === 'both'));
+        $(id).title = !ready ? 'Prepare MIX in the AB Monitor Add On to use A/B here'
+          : x === 'A' ? 'Listen on A (Main Output)' : `Listen on B (${abCue.name.value ?? 'cue'})`;
+      }
+    };
+    const findAB = async () => {
+      await AddOnLogic.abLoad(s);
+      const cue = AddOnLogic.abCue(s);
+      if (cue !== abCue) {
+        abCue = cue;
+        abOffs.forEach((off) => off()); abOffs = [];
+        for (const bus of [s.master, cue].filter(Boolean)) abOffs.push(bus.mute.real.onChange(renderAB));
+      }
+      renderAB();
+    };
+    tb.add(() => abOffs.forEach((off) => off()));
+    $('abA').onclick = () => abCue && AddOnLogic.abListen(s, abCue, 'A').catch(report);
+    $('abB').onclick = () => abCue && AddOnLogic.abListen(s, abCue, 'B').catch(report);
+    tb.on(s.buses, () => void findAB().catch(() => undefined));
+    const abTimer = setInterval(() => { if (!document.hidden) void findAB().catch(() => undefined); }, 2000);   // MIX or its cue set later in AB Monitor
+    tb.add(() => clearInterval(abTimer));
+    void findAB().catch(() => undefined);
     const renderState = () => {
       const playing = t.playing.value === true;
       const rec = t.recordEnabled.value === true;
@@ -723,7 +1228,7 @@
   // own window, but it can resize it (AddOnInstance.resize). "Compact Mixer" unfolds it again at
   // its size and puts LUNA back on the page it showed before. Going to another page in LUNA itself
   // also unfolds it.
-  const BAR_W = 560, BAR_H = 38;
+  const BAR_W = 640, BAR_H = 38;
   let me;                    // this page's AddOnInstance; undefined outside LUNA
   let folded = null;         // { w, h, back } while folded
   async function bindLunaMixerButton(tb) {
@@ -765,6 +1270,12 @@
     btn.onclick = () => (folded ? unfold() : fold()).catch(report);
   }
 
+  // ---- Name and version ----------------------------------------------------------------------
+  // Written here (a test checks it matches manifest.json). Updates come through LUNA's own Add On
+  // marketplace notice, so the page asks no server.
+  const VERSION = '1.1.0';
+  const showVersion = () => { $('appver').textContent = `v${VERSION}`; };
+
   // ---- Start ---------------------------------------------------------------------------------
   async function connect() {
     for (;;) {
@@ -775,6 +1286,7 @@
       }
     }
     Luna.bindShortcuts(luna, { onError: report });
+    showVersion();
     await luna.plugins.load().catch(() => undefined);   // names and categories for loaded plugins (fact 86)
     luna.status.onChange(() => {
       if (luna.status.value === 'connected') say(session?.name.value ?? '');

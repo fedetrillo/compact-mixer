@@ -248,4 +248,193 @@ describe('Compact Mixer', () => {
     expect(inFolder).toEqual(['Gtr R', 'Gtr L']);
     expect(logic.movable(logic.channels(session).at(-1))).toBe(false);          // the master
   });
+
+  it('A/B works on the same buses as AB Monitor: the Main Output and the cue MIX sends to', async () => {
+    const { engine, luna, session } = await connected();
+    const settle = async () => { await engine.settled(); await luna.settled(); await logic.abLoad(session); };
+    expect(logic.abCue(session)).toBeUndefined();                       // no MIX yet: A/B is off
+    const mix = await session.newFolder({ name: 'MIX', mode: 'summing' });
+    await settle();
+    expect(logic.abCue(session)).toBeUndefined();                       // MIX sends to no cue yet
+    const send = mix.outputs.byId('cue_3');
+    await send.controls.get('enabled').real.set(true);
+    await settle();
+    const cue = logic.abCue(session);
+    expect(cue.busType.value).toBe('cue_3');
+    expect(logic.abState(session, cue)).toBe('both');
+    await logic.abListen(session, cue, 'B'); await settle();
+    expect(logic.abState(session, cue)).toBe('B');
+    expect(session.master.mute.on).toBe(true);
+    await logic.abListen(session, cue, 'A'); await settle();
+    expect(logic.abState(session, cue)).toBe('A');
+  });
+
+  it('adds a plugin in the next free insert, from what LUNA offers for that slot', async () => {
+    const { engine, luna, byName } = await connected();
+    engine.addPlugin('uaudio_1176', { name: '1176 Classic', manufacturer: 'UA', categories: ['Compressor'] });
+    engine.addPlugin('uaudio_pultec', { name: 'Pultec EQP-1A', manufacturer: 'UA', categories: ['EQ'] });
+    await engine.settled();
+    const vox = byName('Lead Vox');
+    await vox.effects.load();
+    const slot = logic.freeEffectSlot(vox);
+    expect(slot.id).toBe('effect_0');
+    const rows = await logic.pluginChoices(luna, slot);
+    expect(rows.map((r) => r.pluginId)).toEqual(expect.arrayContaining(['uaudio_1176', 'uaudio_pultec']));
+    expect(logic.groupPlugins(rows).map((g) => g.title)).toEqual(expect.arrayContaining(['Compressor', 'EQ']));
+    expect(logic.groupPlugins(rows, 'pul').flatMap((g) => g.rows).map((r) => r.pluginId)).toEqual(['uaudio_pultec']);
+    await logic.addPlugin(vox, 'uaudio_1176');
+    await engine.settled(); await luna.settled();
+    expect(vox.effects.byId('effect_0').pluginId.value).toBe('uaudio_1176');
+    expect(logic.freeEffectSlot(vox).id).toBe('effect_1');
+  });
+
+  it('adds a send at -inf to a bus, or to a new bus named as typed', async () => {
+    const { engine, luna, session, byName } = await connected();
+    const gtr = byName('Gtr L');
+    await gtr.outputs.load();
+    const reverb = session.buses.items.find((b) => b.name.value === 'Reverb');
+    expect(logic.sendTargets(session, gtr)).toContain(reverb);
+    expect(logic.sendTargets(session, reverb)).not.toContain(reverb);
+    const { send } = await logic.addSend(session, gtr, reverb);
+    await engine.settled(); await luna.settled();
+    expect(logic.sends(gtr).map((r) => r.to)).toEqual(['Reverb']);
+    expect(send.gain.normalized.value).toBe(0);
+    const { bus } = await logic.addSend(session, gtr, { newName: 'Delay' });
+    await engine.settled(); await luna.settled();
+    expect(bus.name.value).toBe('Delay');
+    expect(logic.sends(gtr).map((r) => r.to)).toEqual(['Reverb', 'Delay']);
+    await send.unassign(); await engine.settled(); await luna.settled();
+    expect(logic.sends(gtr).map((r) => r.to)).toEqual(['Delay']);
+    expect(logic.freeSend(gtr).id).toBe('send_0');
+  });
+
+  it('folders: nesting, size, and collapsed contents hidden (but found by a search)', async () => {
+    const { engine, luna, session, byName } = await connected();
+    const gtrs = await session.newFolder({ name: 'Guitars', mode: 'summing' });
+    await session.moveToFolder([byName('Gtr L'), byName('Gtr R')], gtrs);
+    await engine.settled(); await luna.settled();
+    expect(logic.ancestors(session, byName('Gtr L'))).toEqual([gtrs]);
+    expect(logic.ancestors(session, byName('Keys'))).toEqual([]);
+    expect(logic.folderSize(session, gtrs)).toBe(2);
+    const f = logic.emptyFilter();
+    const names = (list) => list.map((c) => c.name.value);
+    expect(names(logic.shown(session, f, new Set([gtrs.id])))).not.toContain('Gtr L');
+    expect(names(logic.shown(session, f, new Set([gtrs.id])))).toContain('Guitars');
+    expect(names(logic.shown(session, { ...f, query: 'gtr' }, new Set([gtrs.id])))).toContain('Gtr L');
+  });
+
+  it('linked faders move by the same dB, and -inf stays put', () => {
+    const t = Luna.Taper.named('');
+    const lead = t.toNormalized(-6), other = t.toNormalized(-10);
+    const moved = logic.linkedValue(t, lead, t.toNormalized(-3), t, other);
+    expect(t.toDb(moved)).toBeCloseTo(-7, 1);
+    expect(logic.linkedValue(t, lead, t.toNormalized(-3), t, 0)).toBe(0);
+    expect(logic.linkedValue(t, lead, 0, t, other)).toBe(0);
+  });
+
+  it('snapshots: capture the mix, then recall it as one undo step', async () => {
+    const { engine, luna, session, byName } = await connected();
+    const settle = async () => { await engine.settled(); await luna.settled(); };
+    await logic.loadForSnapshot(session);
+    const vox = byName('Lead Vox'), keys = byName('Keys');
+    await vox.gain.normalized.set(0.5); await settle();
+    const snap = logic.captureMix(session);
+    expect(logic.mixDiff(session, snap)).toBe(0);
+    await vox.gain.normalized.set(0.2);
+    await keys.mute.real.set(true);
+    await settle();
+    expect(logic.mixDiff(session, snap)).toBe(2);
+    engine.transactions = [];
+    expect(await logic.recallMix(session, snap, 'Verse')).toBe(2);
+    await settle();
+    expect(vox.gain.normalized.value).toBeCloseTo(0.5, 3);
+    expect(keys.mute.on).toBe(false);
+    expect(logic.mixDiff(session, snap)).toBe(0);
+  });
+
+  it('version in main.js matches the manifest', async () => {
+    const fs = await import('node:fs');
+    const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+    const main = fs.readFileSync(new URL('../main.js', import.meta.url), 'utf8');
+    expect(main).toContain(`const VERSION = '${manifest.version}'`);
+    expect(logic.newer('v1.4.0', '1.3.0')).toBe(true);
+    expect(logic.newer('1.3.0', '1.3.0')).toBe(false);
+    expect(logic.newer('v1.2.9', '1.3.0')).toBe(false);
+    expect(logic.newer('1.10.0', '1.9.1')).toBe(true);
+  });
+
+  it('Cmd-click adds or removes, Shift-click selects a run', () => {
+    const chs = ['a', 'b', 'c', 'd'].map((id) => ({ id }));
+    expect(logic.clickSelection(['a'], 'a', chs[2], chs, { toggle: true })).toEqual(['a', 'c']);
+    expect(logic.clickSelection(['a', 'c'], 'c', chs[2], chs, { toggle: true })).toEqual(['a']);
+    expect(logic.clickSelection(['b'], 'b', chs[3], chs, { range: true })).toEqual(['b', 'c', 'd']);
+    expect(logic.clickSelection(['a', 'b'], 'b', chs[3], chs)).toEqual(['d']);
+  });
+
+  it('a new plugin goes at the end; moving one keeps each plugin with its settings', async () => {
+    const { engine, luna, session, byName } = await connected();
+    engine.addPlugin('p_a', { name: 'Alpha', categories: ['EQ'] });
+    engine.addPlugin('p_b', { name: 'Beta', categories: ['Compressor'] });
+    engine.addPlugin('p_c', { name: 'Gamma', categories: ['Delay'] });
+    await engine.settled();
+    const settle = async () => { await engine.settled(); await luna.settled(); };
+    const keys = byName('Keys');
+    await keys.effects.load();
+    await keys.insert('p_b', 'effect_2'); await settle();
+    expect(logic.freeEffectSlot(keys).id).toBe('effect_3');      // after the last in use, not effect_0
+    await logic.addPlugin(keys, 'p_c'); await settle();
+    await keys.insert('p_a', 'effect_0'); await settle();
+    const ids = () => keys.effectSlots.filter((sl) => !sl.isEmpty).map((sl) => sl.pluginId.value);
+    expect(ids()).toEqual(['p_a', 'p_b', 'p_c']);
+    const gamma = keys.effects.byId('effect_3');
+    await gamma.controls.load();
+    const param = gamma.params[0];
+    expect(param).toBeDefined();
+    if (param) { await param.normalized.set(0.25); await settle(); }
+    await logic.movePlugin(session, keys, 2, 0); await settle();
+    expect(ids()).toEqual(['p_c', 'p_a', 'p_b']);
+    if (param) {
+      const moved = keys.effects.byId('effect_0');
+      await moved.controls.load();
+      expect(moved.controls.byId(param.id).normalized.value).toBeCloseTo(0.25, 3);
+    }
+  });
+
+  it('fader groups: mates and counts', async () => {
+    const { session, byName } = await connected();
+    const groups = { [byName('Gtr L').id]: 2, [byName('Gtr R').id]: 2, [byName('Keys').id]: 5, gone: 2 };
+    expect(logic.groupMates(session, groups, byName('Gtr L')).map((c) => c.name.value)).toEqual(['Gtr R']);
+    expect(logic.groupMates(session, groups, byName('Lead Vox'))).toEqual([]);
+    expect(logic.groupCounts(session, groups)).toEqual({ 2: 2, 5: 1 });
+    expect(logic.GROUP_COLORS.length).toBe(8);
+  });
+
+  it('groups: mute, solo and reset act on the whole group, each as one undo step', async () => {
+    const { engine, luna, session, byName } = await connected();
+    const settle = async () => { await engine.settled(); await luna.settled(); };
+    const [l, r, k] = ['Gtr L', 'Gtr R', 'Keys'].map(byName);
+    const groups = { [l.id]: 1, [r.id]: 1 };
+    await logic.toggleGrouped(session, groups, l, 'mute'); await settle();
+    expect([l.mute.on, r.mute.on, k.mute.on]).toEqual([true, true, false]);
+    await logic.toggleGrouped(session, groups, r, 'mute'); await settle();
+    expect([l.mute.on, r.mute.on]).toEqual([false, false]);
+    await logic.toggleGrouped(session, groups, l, 'solo', false); await settle();
+    expect([logic.soloOf(l).on, logic.soloOf(r).on]).toEqual([true, false]);
+    await l.gain.real.set(-10); await r.gain.real.set(-6); await settle();
+    await logic.resetGrouped(session, groups, r); await settle();
+    expect([l.gain.real.value, r.gain.real.value].map((v) => Math.round(v))).toEqual([0, 0]);
+  });
+
+  it('colours one channel, or every selected channel in one undo step', async () => {
+    const { engine, luna, session, byName } = await connected();
+    const settle = async () => { await engine.settled(); await luna.settled(); };
+    const [k, l, r] = ['Keys', 'Gtr L', 'Gtr R'].map(byName);
+    const c = logic.PALETTE[8];
+    expect(await logic.setColor(session, k, c)).toBe(1); await settle();
+    expect(k.color.value >>> 0).toBe(c >>> 0);
+    await session.context.selectionTracks.set([l.id, r.id]); await settle();
+    expect(await logic.setColor(session, l, logic.PALETTE[0])).toBe(2); await settle();
+    expect([l.color.value >>> 0, r.color.value >>> 0]).toEqual([logic.PALETTE[0] >>> 0, logic.PALETTE[0] >>> 0]);
+    expect(logic.PALETTE.length).toBe(24);
+  });
 });

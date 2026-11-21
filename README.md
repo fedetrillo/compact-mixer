@@ -32,10 +32,42 @@ tracks and their buses on one screen.
   Option+←/→ for the selected channel.
 - **Transport bar:** return to zero, back/forward one bar, stop, play, record, loop, position,
   tempo and time signature.
+- **Mix snapshots:** save the mix (faders, mutes, solos, pans and send levels) under a name and
+  recall it with a click, as one undo step. Each snapshot shows how many values differ from
+  the mix now. Kept on this computer, per session.
+- **Fader groups 1-8:** click the slim chip under a channel's fader to put it in a group.
+  Dragging any fader of a group moves the others by the same dB, keeping their balance. Mute,
+  solo and Option/Alt-click or double-click (back to 0 dB) also act on the whole group. Hold
+  Option/Alt while dragging to move one fader alone; the Groups button suspends every group.
+- **Look (◐ in the toolbar):** dark or grey theme, and how much of each channel's colour fills
+  its strip (0-60%).
+- **Channel colours:** click a strip's colour bar, or right-click its name, to pick one of 24
+  colours. With several channels selected, they all take it, as one undo step.
+- **Folders:** channels inside a folder carry a band in the folder's colour, one per level of
+  nesting. The folder's ▾ button (on narrow and wide strips) hides what is inside it here (LUNA is not changed); ▸ shows
+  how many channels it holds. A search still finds channels inside a collapsed folder.
+- **Add plugins and sends** from a wide strip. "+ Plugin" opens a browser with the plugins LUNA
+  offers for that insert, by category; type to search. "+ Send" lists the session's buses, or
+  makes a new one with the name you type; the send starts at -inf. A new plugin goes at the end of the chain. Drag an insert onto another to change the order, or
+  right-click it to move it up or down, replace, bypass or remove it, and a send to move it to another bus or remove it.
+- **A / B** in the transport bar switches your speakers together with the
+  [AB Monitor](https://github.com/fedetrillo/ab-monitor) Add On: A is the Main Output, B the cue
+  that AB Monitor's MIX folder sends to. Both Add Ons follow each other. The buttons wake up once
+  MIX is prepared in AB Monitor.
 - **LUNA Mixer** shows LUNA's own Mixer and folds this window to a thin bar; **Compact Mixer**
   unfolds it again.
 
 Every fader, pan and send drag is one undo step in LUNA.
+
+## Updates
+
+The top bar shows the name and version. New versions arrive through LUNA's Add On
+marketplace, which tells you when there is an update.
+
+## Manual
+
+The user manual, in English and Spanish with screenshots:
+[docs/Compact-Mixer-Manual.pdf](docs/Compact-Mixer-Manual.pdf). It is also attached to each release.
 
 ## Install
 

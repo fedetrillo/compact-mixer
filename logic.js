@@ -468,6 +468,406 @@ const AddOnLogic = {
     await session.context.selectionTracks.set([ch.id]);
     await session.context.lastSelectedTrack.set(ch.id);
   },
+
+  // ---- Folders: nesting and collapsing --------------------------------------------------------
+
+  /** The folders `ch` is inside, outermost first ([] at the session root). */
+  ancestors(session, ch) {
+    const out = [];
+    let id = ch.folderUid.value ?? null;
+    for (let guard = 0; id && guard < 32; guard++) {
+      const f = session.buses.byId(id);
+      if (!f) break;
+      out.unshift(f);
+      id = f.folderUid.value ?? null;
+    }
+    return out;
+  },
+
+  /** How many channels are inside `folder`, at any depth. */
+  folderSize(session, folder) {
+    return AddOnLogic.channels(session).filter((ch) => AddOnLogic.ancestors(session, ch).includes(folder)).length;
+  },
+
+  /**
+   * The channels the mixer shows: those that pass the filter, less those inside a folder
+   * collapsed here. While searching by name, matches show even inside a collapsed folder.
+   */
+  shown(session, filter, collapsed = new Set()) {
+    const list = AddOnLogic.filtered(session, filter);
+    if (collapsed.size === 0 || filter.query.trim()) return list;
+    return list.filter((ch) => !AddOnLogic.ancestors(session, ch).some((f) => collapsed.has(f.id)));
+  },
+
+  // ---- Channel colours -----------------------------------------------------------------------
+
+  /** The colours offered for a channel: 24, in rows of hues from warm to cool, plus greys. */
+  PALETTE: [
+    0xffe8473f, 0xfff0763b, 0xfff2a33a, 0xffeccd3c, 0xffb7d43f, 0xff6cc94f,
+    0xff3fbf86, 0xff35c2c0, 0xff3aa7e8, 0xff4f7ff0, 0xff7a68ee, 0xffa65fe6,
+    0xffd45dc8, 0xffe85d92, 0xffb5463f, 0xffb87a3f, 0xff9a8f4a, 0xff5f8f5a,
+    0xff4c8a8c, 0xff4f6f9e, 0xff76689c, 0xff9a9aa3, 0xff6b6b73, 0xffd8d8de,
+  ],
+
+  /**
+   * Colour a channel, or every selected channel when it is one of several selected (as LUNA's
+   * own colour menu does), as one undo step. Resolves to how many were coloured.
+   */
+  async setColor(session, ch, argb) {
+    const sel = session.context.selectionTracks.value ?? [];
+    const targets = sel.length > 1 && sel.includes(ch.id)
+      ? AddOnLogic.channels(session).filter((c) => sel.includes(c.id) && !['master', 'other'].includes(AddOnLogic.kindOf(c)))
+      : [ch];
+    const todo = targets.filter((c) => (c.color.value >>> 0) !== (argb >>> 0));
+    if (todo.length === 1) await todo[0].color.set(argb);
+    else if (todo.length) await session.transaction('Compact Mixer: colour', async () => { await Promise.all(todo.map((c) => c.color.set(argb))); });
+    return targets.length;
+  },
+
+  // ---- Fader groups --------------------------------------------------------------------------
+
+  /** Eight groups, each with its colour. */
+  GROUP_COLORS: ['#e8594f', '#f29a3a', '#e9cf3c', '#5cc861', '#3fc7c0', '#4f8ff0', '#9a6cf0', '#e46fc0'],
+
+  /** The other channels in `ch`'s group (`groups`: uid -> 1..8), or [] when it has none. */
+  groupMates(session, groups, ch) {
+    const g = groups[ch.id];
+    if (!g) return [];
+    return AddOnLogic.channels(session).filter((c) => c !== ch && groups[c.id] === g);
+  },
+
+  /**
+   * Mute or solo a channel and, when it is in a group, every channel of the group, to the
+   * channel's new state, as one undo step. `which` is 'mute' or 'solo'.
+   */
+  async toggleGrouped(session, groups, ch, which, grouped = true) {
+    const ctlOf = which === 'mute' ? AddOnLogic.muteOf : AddOnLogic.soloOf;
+    const ctl = ctlOf(ch);
+    if (!ctl) return;
+    const to = !ctl.on;
+    const all = [ch, ...(grouped ? AddOnLogic.groupMates(session, groups, ch) : [])].map(ctlOf).filter((c) => c && c.on !== to);
+    if (all.length === 1) { await all[0].real.set(to); return; }
+    await session.transaction(`Compact Mixer: ${which} group`, async () => { await Promise.all(all.map((c) => c.real.set(to))); });
+  },
+
+  /** Put a channel's fader, and its group's when `grouped`, back to LUNA's default (0 dB), as one undo step. */
+  async resetGrouped(session, groups, ch, grouped = true) {
+    const all = [ch, ...(grouped ? AddOnLogic.groupMates(session, groups, ch) : [])];
+    if (all.length === 1) { await ch.gain.resetToDefault(); return; }
+    await session.transaction('Compact Mixer: reset group faders', async () => { await Promise.all(all.map((c) => c.gain.resetToDefault())); });
+  },
+
+  /** How many channels each group holds: { 1: 3, 4: 2 }. Channels gone from the session are not counted. */
+  groupCounts(session, groups) {
+    const out = {};
+    for (const ch of AddOnLogic.channels(session)) { const g = groups[ch.id]; if (g) out[g] = (out[g] ?? 0) + 1; }
+    return out;
+  },
+
+  // ---- Linked faders -------------------------------------------------------------------------
+
+  /**
+   * Where a linked fader goes when the lead moves from `leadFrom` to `leadTo` (normalized, on
+   * the lead's taper): the same change in dB, from where it started (`from`, on its own taper).
+   * A fader at -inf stays there; one pushed below the bottom stops at -inf.
+   */
+  linkedValue(leadTaper, leadFrom, leadTo, taper, from) {
+    if (from <= 0) return 0;
+    const delta = leadTaper.toDb(leadTo) - leadTaper.toDb(leadFrom);
+    if (!Number.isFinite(delta)) return leadTo <= 0 ? 0 : from;
+    return Math.min(1, Math.max(0, taper.toNormalized(taper.toDb(from) + delta)));
+  },
+
+  // ---- Mix snapshots ---------------------------------------------------------------------------
+
+  /** Load what a snapshot reads for every channel: strip, controls, and routed sends' controls. */
+  async loadForSnapshot(session) {
+    const all = AddOnLogic.channels(session).filter((ch) => AddOnLogic.kindOf(ch) !== 'other');
+    await Promise.all(all.map(async (ch) => {
+      await Promise.all([ch.loadStrip(), ch.controls.load(), ch.outputs.load()]).catch(() => undefined);
+      await Promise.all(ch.outputs.items.filter((o) => o.isSend && (o.destinations.value ?? []).length).map((o) => o.controls.load().catch(() => undefined)));
+    }));
+    return all;
+  },
+
+  /**
+   * The mix as it is now: per channel, fader, mute, solo, pans and each routed send's level and
+   * mute. Plain data, by channel uid, to keep in storage.
+   */
+  captureMix(session) {
+    const mix = {};
+    for (const ch of AddOnLogic.channels(session)) {
+      if (AddOnLogic.kindOf(ch) === 'other') continue;
+      const row = { g: ch.gain.normalized.value ?? null };
+      const m = AddOnLogic.muteOf(ch); if (m) row.m = m.on;
+      const so = AddOnLogic.soloOf(ch); if (so) row.s = so.on;
+      const pans = (ch.main.pans ?? []).map((c) => c.normalized.value ?? null);
+      if (pans.length) row.p = pans;
+      const sends = {};
+      for (const o of ch.outputs.items.filter((x) => x.isSend && (x.destinations.value ?? []).length && x.controls.byId('gain'))) {
+        sends[o.id] = { g: o.gain.normalized.value ?? null, m: o.mute.on };
+      }
+      if (Object.keys(sends).length) row.x = sends;
+      mix[ch.id] = row;
+    }
+    return mix;
+  },
+
+  /** How many values `mix` would change now (0 when the mix is as the snapshot has it). */
+  mixDiff(session, mix) {
+    return AddOnLogic.mixChanges(session, mix).length;
+  },
+
+  /** Every write recalling `mix` needs: [control-ish view, value]. Channels gone since are skipped. */
+  mixChanges(session, mix) {
+    const out = [];
+    const close = (a, b) => typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < 1e-4;
+    const num = (view, v) => { if (typeof v === 'number' && !close(view.value, v)) out.push([view, v]); };
+    const bool = (ctl, v) => { if (ctl && typeof v === 'boolean' && ctl.on !== v) out.push([ctl.real, v]); };
+    const byId = new Map(AddOnLogic.channels(session).map((ch) => [ch.id, ch]));
+    for (const [id, row] of Object.entries(mix)) {
+      const ch = byId.get(id);
+      if (!ch) continue;
+      num(ch.gain.normalized, row.g);
+      bool(AddOnLogic.muteOf(ch), row.m);
+      bool(AddOnLogic.soloOf(ch), row.s);
+      (ch.main.pans ?? []).forEach((c, i) => num(c.normalized, row.p?.[i]));
+      for (const [sid, sr] of Object.entries(row.x ?? {})) {
+        const o = ch.outputs.byId(sid);
+        if (!o?.controls.byId('gain')) continue;
+        num(o.gain.normalized, sr.g);
+        bool(o.mute, sr.m);
+      }
+    }
+    return out;
+  },
+
+  /** Put the mix back as `mix` has it, as one undo step. Resolves to how many values changed. */
+  async recallMix(session, mix, name = 'snapshot') {
+    const changes = AddOnLogic.mixChanges(session, mix);
+    if (!changes.length) return 0;
+    await session.transaction(`Compact Mixer: recall ${name}`, async () => {
+      await Promise.all(changes.map(([view, v]) => view.set(v)));
+    });
+    return changes.length;
+  },
+
+  /** Everything needed to load a plugin again elsewhere: id, parameter values, and IN/OUT. */
+  async capturePlugin(slot) {
+    await slot.controls.load().catch(() => undefined);
+    const params = {};
+    for (const c of slot.params) if (typeof c.normalized.value === 'number') params[c.id] = c.normalized.value;
+    return { pluginId: slot.pluginId.value, params, on: slot.in.value !== false };
+  },
+
+  /** Load a captured plugin into `slot` with its parameter values and IN/OUT. */
+  async restorePlugin(session, slot, cap) {
+    if (slot.pluginId.value !== cap.pluginId || !slot.loaded.value) await slot.setPlugin(cap.pluginId);
+    await slot.controls.load().catch(() => undefined);
+    const end = Date.now() + 3000;
+    while (Object.keys(cap.params).some((id) => !slot.controls.byId(id) || slot.controls.byId(id).initialized.value !== true) && Date.now() < end) {
+      await new Promise((r) => setTimeout(r, 100));
+      await slot.controls.reload().catch(() => undefined);
+    }
+    const writes = Object.entries(cap.params)
+      .map(([id, v]) => [slot.controls.byId(id), v])
+      .filter(([c, v]) => c && c.initialized.value === true && Math.abs((c.normalized.value ?? -1) - v) > 1e-6);
+    if (writes.length) await session.transaction('Compact Mixer: plugin settings', async () => { await Promise.all(writes.map(([c, v]) => c.normalized.set(v))); });
+    if ((slot.in.value !== false) !== cap.on) await slot.setIn(cap.on);
+  },
+
+  /**
+   * Move the effect insert at position `from` to position `to` in the channel's chain (positions
+   * count only inserts in use, top to bottom). LUNA has no move for inserts, so each slot whose
+   * plugin changes is loaded again with the plugin that goes there, its parameter values and its
+   * IN/OUT. Resolves to how many slots were loaded.
+   */
+  async movePlugin(session, ch, from, to) {
+    await ch.effects.load();
+    const used = ch.effectSlots.filter((sl) => !sl.isEmpty);
+    if (from === to || from < 0 || to < 0 || from >= used.length || to >= used.length) return 0;
+    for (const sl of used) if (sl.editorOpen.value === true) await sl.closeEditor({ timeoutMs: 3000 }).catch(() => undefined);
+    const caps = [];
+    for (const sl of used) caps.push(await AddOnLogic.capturePlugin(sl));
+    const order = caps.slice();
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    let loaded = 0;
+    for (let i = 0; i < used.length; i++) {
+      if (order[i] === caps[i]) continue;
+      await AddOnLogic.restorePlugin(session, used[i], order[i]);
+      loaded++;
+    }
+    return loaded;
+  },
+
+  /**
+   * Take the plugin out of a slot without hanging: close its window first (LUNA can stall
+   * removing a plugin whose editor is open), then clear, and wait (up to `ms`) to see it gone.
+   */
+  async removePlugin(slot, ms = 8000) {
+    if (slot.editorOpen.value === true) await slot.closeEditor({ timeoutMs: 3000 }).catch(() => undefined);
+    await Promise.race([slot.clear(), new Promise((_, no) => setTimeout(() => no(new Error('LUNA did not answer the removal')), ms))]);
+    const end = Date.now() + ms;
+    while (!slot.isEmpty && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+    if (!slot.isEmpty) throw new Error('The plugin is still there: LUNA did not remove it');
+  },
+
+  /**
+   * The selection after clicking `ch` with modifiers, as in LUNA: plain click selects it alone,
+   * Cmd/Ctrl adds or removes it, Shift selects the run from the last selected to it among `shown`.
+   */
+  clickSelection(current, last, ch, shown, { toggle = false, range = false } = {}) {
+    if (toggle) return current.includes(ch.id) ? current.filter((id) => id !== ch.id) : [...current, ch.id];
+    if (range && last) {
+      const ids = shown.map((c) => c.id);
+      const a = ids.indexOf(last), b = ids.indexOf(ch.id);
+      if (a >= 0 && b >= 0) {
+        const run = ids.slice(Math.min(a, b), Math.max(a, b) + 1);
+        return [...new Set([...current, ...run])];
+      }
+    }
+    return [ch.id];
+  },
+
+  /** True when version `a` ("1.4.0" or "v1.4.0") is newer than `b`. */
+  newer(a, b) {
+    const n = (v) => String(v ?? '').replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0);
+    const x = n(a), y = n(b);
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+    return false;
+  },
+
+  // ---- Adding plugins and sends from a wide strip ------------------------------------------
+
+  /**
+   * Where "+" loads a plugin: the first empty effect insert after the last one in use, so a new
+   * plugin goes at the end of the chain; else the first empty one; undefined when all are full.
+   */
+  freeEffectSlot(ch) {
+    const slots = ch.effectSlots;
+    let last = -1;
+    slots.forEach((sl, i) => { if (!sl.isEmpty) last = i; });
+    return slots.slice(last + 1).find((sl) => sl.isEmpty) ?? slots.find((sl) => sl.isEmpty);
+  },
+
+
+  /** The first send that goes nowhere, where "+" adds one; undefined when all 8 are used. */
+  freeSend(ch) {
+    return ch.outputs.items
+      .filter((o) => o.isSend && (o.destinations.value ?? []).length === 0)
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))[0];
+  },
+
+  /** The buses a channel can send to: aux buses (not folders, cues or the master), not itself. */
+  sendTargets(session, ch) {
+    return session.channelsInOrder.filter((b) => b !== ch && AddOnLogic.kindOf(b) === 'bus');
+  },
+
+  /**
+   * The installed plugins this slot takes, as LUNA's own browser offers them (only effects that
+   * run in this channel's format, consoles for the console slot). Older LUNAs without that query
+   * fall back to the whole catalog. Rows: { pluginId, name, manufacturer, categories }.
+   */
+  async pluginChoices(luna, slot) {
+    try {
+      return await slot.validPlugins();
+    } catch {
+      await luna.plugins.load().catch(() => undefined);
+      return luna.plugins.items
+        .map((p) => ({ pluginId: p.id, name: p.name.value ?? p.id, manufacturer: p.manufacturer?.value ?? '', categories: [...(p.categories ?? [])] }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+  },
+
+  /**
+   * Plugin rows matching `text` (every word in the name, maker or a category), grouped by their
+   * first category in alphabetical order when there is no search text; one flat group otherwise.
+   */
+  groupPlugins(rows, text = '') {
+    const words = text.toLowerCase().split(/\s+/).filter(Boolean);
+    const hay = (r) => `${r.name} ${r.manufacturer} ${r.categories.join(' ')}`.toLowerCase();
+    const hits = rows.filter((r) => words.every((w) => hay(r).includes(w)));
+    if (words.length) return [{ title: null, rows: hits }];
+    const groups = new Map();
+    for (const r of hits) {
+      const g = r.categories[0] ?? 'Other';
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(r);
+    }
+    return [...groups.keys()].sort((a, b) => a.localeCompare(b)).map((title) => ({ title, rows: groups.get(title) }));
+  },
+
+  /** Load a plugin into a slot (the free one by default) and resolve once it is in. */
+  async addPlugin(ch, pluginId, slot = AddOnLogic.freeEffectSlot(ch)) {
+    if (!slot) throw new Error('No free insert on this channel');
+    await slot.setPlugin(pluginId);
+    return slot;
+  },
+
+  /**
+   * Add a send to `bus` on the first free send, at -inf so nothing jumps in level. `bus` may be
+   * { newName } to create the bus first, named as typed. Plain steps, not one batch: LUNA holds
+   * a batch's changes until it ends, and assign waits to see its route. Resolves to { send, bus }.
+   */
+  async addSend(session, ch, bus) {
+    const send = AddOnLogic.freeSend(ch);
+    if (!send) throw new Error('All 8 sends on this channel are in use');
+    await send.controls.load();
+    // Level and mute first, while the send goes nowhere, so it never sounds at its old level.
+    if ((send.gain.normalized.value ?? 0) > 0) await send.gain.normalized.set(0);
+    if (send.mute.on) await send.mute.real.set(false);
+    const target = bus && bus.newName !== undefined ? await session.newBus({ name: bus.newName.trim() || 'Bus' }) : bus;
+    await send.assign(target.id);
+    return { send, bus: target };
+  },
+
+
+  // ---- AB Monitor --------------------------------------------------------------------------
+  // The A/B selector works on the same LUNA state as the AB Monitor Add On, so each follows the
+  // other: A is the Main Output, B the cue that the MIX folder sends to. Switching mutes one bus
+  // and unmutes the other.
+
+  /** The MIX summing folder that AB Monitor prepares, if the session has one. */
+  abMix(session) {
+    return session.buses.items.find((b) => b.isFolder && (b.name.value ?? '').trim().toUpperCase() === 'MIX' && b.folderMode.value === 'summing');
+  },
+
+  /** Load MIX's cue sends and their controls, so abCue can read them. */
+  async abLoad(session) {
+    const mix = AddOnLogic.abMix(session);
+    if (!mix) return;
+    await mix.outputs.load().catch(() => undefined);
+    await Promise.all([0, 1, 2, 3].map((i) => mix.outputs.byId(`cue_${i}`)?.controls.load().catch(() => undefined)));
+  },
+
+  /** B: the first cue bus that MIX sends to (send on and unmuted), or undefined. */
+  abCue(session) {
+    const mix = AddOnLogic.abMix(session);
+    if (!mix) return undefined;
+    for (let i = 0; i < 4; i++) {
+      const out = mix.outputs.byId(`cue_${i}`);
+      if (!out?.controls.byId('mute')) continue;
+      const enabled = out.controls.byId('enabled') ? out.controls.get('enabled').on : true;
+      if (enabled && !out.controls.get('mute').on) return session.buses.items.find((b) => b.busType.value === `cue_${i}`);
+    }
+    return undefined;
+  },
+
+  /** 'A', 'B', 'both' or 'none', from the Main Output's and B's mutes. */
+  abState(session, cue) {
+    if (!cue || !session.master) return 'none';
+    const a = !session.master.mute.on;
+    const b = !cue.mute.on;
+    return a && b ? 'both' : a ? 'A' : b ? 'B' : 'none';
+  },
+
+  /** Listen on A or B, as one undo step: unmute that bus, mute the other. */
+  async abListen(session, cue, which) {
+    await session.transaction(`Compact Mixer: listen ${which}`, async () => {
+      await session.master.mute.real.set(which !== 'A');
+      await cue.mute.real.set(which !== 'B');
+    });
+  },
 };
 
 globalThis.AddOnLogic = AddOnLogic;
