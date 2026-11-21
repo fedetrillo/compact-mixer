@@ -1,0 +1,21 @@
+{
+  "name": "compact_mixer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Compact Mixer, a LUNA Add On by Fede Trillo",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "serve": "ua-builder serve",
+    "install-addon": "ua-builder install",
+    "pack": "ua-builder pack"
+  },
+  "devDependencies": {
+    "@uaudio/luna-builder-sdk": "file:../../.claude/plugins/marketplaces/luna-builder-sdk/plugins/ua-luna-builder",
+    "vite": "8.3.0",
+    "vitest": "5.0.1"
+  },
+  "author": "Fede Trillo <fedetrillo@gmail.com>",
+  "license": "SEE LICENSE IN LICENSE"
+}

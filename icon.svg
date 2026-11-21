@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- One gradient over the whole lane height, so each bar shows the colours of its own level. -->
+    <linearGradient id="m" gradientUnits="userSpaceOnUse" x1="0" y1="416" x2="0" y2="96">
+      <stop offset="0" stop-color="#1f9d4c"/><stop offset=".45" stop-color="#7fca3d"/>
+      <stop offset=".7" stop-color="#e9d53a"/><stop offset=".88" stop-color="#f39a2b"/><stop offset="1" stop-color="#ec4a2f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="104" fill="#141416"/>
+  <rect x="24" y="24" width="464" height="464" rx="86" fill="#1c1c21" stroke="#2e2e35" stroke-width="4"/>
+  <rect x="86" y="96" width="78" height="320" rx="10" fill="#0b0b0d"/>
+  <rect x="217" y="96" width="78" height="320" rx="10" fill="#0b0b0d"/>
+  <rect x="348" y="96" width="78" height="320" rx="10" fill="#0b0b0d"/>
+  <path d="M86 236h78v170a10 10 0 0 1-10 10h-58a10 10 0 0 1-10-10z" fill="url(#m)"/>
+  <path d="M217 132h78v274a10 10 0 0 1-10 10h-58a10 10 0 0 1-10-10z" fill="url(#m)"/>
+  <path d="M348 286h78v120a10 10 0 0 1-10 10h-58a10 10 0 0 1-10-10z" fill="url(#m)"/>
+  <rect x="72" y="196" width="106" height="12" rx="5" fill="#ffffff"/>
+  <rect x="203" y="156" width="106" height="12" rx="5" fill="#ffffff"/>
+  <rect x="334" y="226" width="106" height="12" rx="5" fill="#ffffff"/>
+</svg>

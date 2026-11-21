@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Compact Mixer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #141416; --panel: #1c1c20; --raised: #25252a; --line: #2e2e35; --text: #e6e6ea; --dim: #8a8a94;
+      --accent: #f2c14e; --mute: #c44545; --solo: #d8b52a; --sel: #5b8def;
+      --w: 50px;
+    }
+    body.tiny { --w: 36px; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 12px/1.25 -apple-system, system-ui, Helvetica, sans-serif; display: flex; flex-direction: column; overflow: hidden; user-select: none; }
+    button, input { font: inherit; color: inherit; }
+
+    /* Toolbar */
+    header { display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; }
+    .btn { background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+    .btn:hover { border-color: #444; }
+    .btn[disabled] { opacity: .35; cursor: default; }
+    .btn.on { background: var(--accent); border-color: var(--accent); color: #111; }
+    #play.on { background: #2f9e57; border-color: #2f9e57; color: #fff; }
+    #search { width: 130px; min-width: 70px; flex: 0 1 130px; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 7px; outline: none; user-select: text; }
+    #search:focus { border-color: var(--accent); }
+    .group { display: flex; gap: 3px; align-items: center; }
+    .chip { background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 2px 8px; cursor: pointer; color: var(--dim); }
+    .chip.on { background: var(--raised); color: var(--text); border-color: #4a4a52; }
+    .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+    .dot.on { border-color: #fff; }
+    #clearSolo.active { background: var(--solo); border-color: var(--solo); color: #111; }
+    #unmute.active { background: var(--mute); border-color: var(--mute); color: #fff; }
+    #count { color: var(--dim); font-variant-numeric: tabular-nums; }
+    #status { color: var(--dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+    #status.error { color: #ff8080; }
+    .spacer { flex: 1; }
+
+    /* Strips */
+    #body { flex: 1; display: flex; min-height: 0; }
+    #strips { flex: 1; display: flex; gap: 2px; padding: 6px; overflow-x: auto; overflow-y: hidden; min-width: 0; }
+    #masterBox { flex: none; display: flex; padding: 6px; border-left: 1px solid var(--line); background: var(--panel); }
+    #empty { color: var(--dim); padding: 20px; }
+    .strip { width: var(--w); flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0 2px 4px; background: var(--panel); border-radius: 4px; border: 1px solid transparent; overflow: hidden; }
+    .strip.selected { border-color: var(--sel); }
+    .strip .color { align-self: stretch; height: 4px; margin: 0 -2px; background: #555; }
+    .strip .head { position: relative; width: 100%; height: 26px; flex: none; }
+    .strip .name { width: 100%; height: 100%; font-size: 10px; text-align: center; overflow: hidden; word-break: break-word; cursor: pointer; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .strip .name:hover { color: #fff; }
+    .strip .pan { width: 100%; height: 14px; margin: 0; accent-color: #9ab; }
+    .strip .pans { display: flex; gap: 1px; width: 100%; }
+    .strip .pans .pan { flex: 1; min-width: 0; }
+    .strip .panlabel { font-size: 9px; color: var(--dim); height: 1.1em; white-space: nowrap; overflow: hidden; }
+    .strip .peak { font-size: 10px; font-variant-numeric: tabular-nums; height: 1.25em; width: 100%; text-align: center; border-radius: 2px; color: var(--dim); background: #0c0c0e; cursor: pointer; }
+    .strip .peak.hot { color: #fff; background: #b23030; }
+
+    /* The fader lane is the meter. Only a thin line marks the fader's position; the bars,
+       the peak lines and the dB marks stay visible above and below it. */
+    .lane { flex: 1; min-height: 60px; position: relative; align-self: stretch; margin: 0 4px; background: #0b0b0d; border-radius: 2px; cursor: ns-resize; touch-action: none; outline: none; }
+    .lane .bars { position: absolute; inset: 0; display: flex; gap: 1px; padding: 0 1px; overflow: hidden; border-radius: 2px; }
+    .lane .stream { position: relative; flex: 1; overflow: hidden; background: #17171b; }
+    /* Bars and peak lines move by transform only, never height (docs/DRAWING.md): <i> slides
+       down by the unlit share, its <u> back up by the same so the colours stay put, and <b>
+       carries the held-peak line on its top edge. */
+    .lane .stream i, .lane .stream u, .lane .stream b { position: absolute; inset: 0; transform: translateY(100%); will-change: transform; }
+    .lane .stream i { overflow: hidden; }
+    .lane .stream u { transform: translateY(-100%); }
+    .lane .stream b::after { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: rgba(255,255,255,.85); }
+    .lane.clip .bars { box-shadow: inset 0 0 0 1px #e04545; }
+    .lane .ticks { position: absolute; inset: 0; pointer-events: none; }
+    .lane .tick { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid rgba(255,255,255,.16); }
+    .lane .tick.zero { border-top-color: rgba(255,255,255,.4); }
+    .lane .tick span { position: absolute; right: calc(100% + 3px); top: -6px; font-size: 8px; line-height: 1; color: var(--dim); }
+    .lane .cap { position: absolute; inset: 0; pointer-events: none; will-change: transform; }
+    .lane .cap::before { content: ''; position: absolute; left: -4px; right: -4px; top: -1px; height: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.75); border-radius: 1px; }
+    .lane:hover .cap::before, .lane.dragging .cap::before { height: 3px; top: -1.5px; background: var(--accent); }
+    .lane:focus-visible { box-shadow: 0 0 0 1px var(--accent); }
+    .strip .db { font-size: 10px; cursor: default; font-variant-numeric: tabular-nums; height: 1.2em; color: var(--dim); }
+    .strip .buttons { display: flex; gap: 2px; width: 100%; }
+    .strip .buttons button { flex: 1; min-width: 0; padding: 2px 0; font-size: 10px; font-weight: 600; border-radius: 3px; border: 1px solid var(--line); background: var(--raised); cursor: pointer; }
+    .strip .mute.on { background: var(--mute); border-color: var(--mute); color: #fff; }
+    .strip .solo.on { background: var(--solo); border-color: var(--solo); color: #111; }
+    .strip.master { --w: 64px; }
+    .strip.master .lane { margin-left: 22px; }
+    body.tiny .strip:not(.master) .buttons { flex-direction: column; }
+    body.tiny .strip .name { font-size: 9px; }
+
+
+    /* Wide strip: the selected channel. Inserts, sends and pan on the left, the fader-meter on the right. */
+    .strip.wide { --w: 196px; border-color: var(--sel); background: #202027; }
+    body.tiny .strip.wide { --w: 180px; }
+    .strip.wide .name { height: auto; -webkit-line-clamp: 1; font-size: 11px; font-weight: 600; }
+    .strip .cols { flex: 1; min-height: 0; display: flex; gap: 4px; width: 100%; }
+    .strip .side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; overflow-x: hidden; padding-right: 1px; }
+    .strip .fadercol { width: 46px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .strip .sec .h { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 2px; display: flex; justify-content: space-between; }
+    .strip .sec .h .panlabel { text-transform: none; letter-spacing: 0; height: auto; }
+    .strip .none { font-size: 10px; color: #5c5c66; padding: 2px 0; }
+    .strip .ins { display: flex; gap: 2px; margin-bottom: 2px; }
+    .strip .ins .pwr { flex: none; width: 14px; padding: 0; border-radius: 3px; border: 1px solid var(--line); background: var(--raised); cursor: pointer; position: relative; }
+    .strip .ins .pwr::after { content: ''; position: absolute; left: 4px; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%; background: #444; }
+    .strip .ins .pwr.on::after { background: #4fd16a; box-shadow: 0 0 4px #4fd16a; }
+    .strip .ins .pname { flex: 1; min-width: 0; text-align: left; font-size: 10px; padding: 2px 4px; border-radius: 3px; border: 1px solid var(--line); background: #2b2d36; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .strip .ins .pname:hover { border-color: #555; }
+    .strip .ins .pname.open { border-color: var(--accent); color: var(--accent); }
+    .strip .ins .pname.err { color: #ff8080; }
+    .strip .ins.bypassed .pname { opacity: .45; text-decoration: line-through; }
+    .strip .send { background: #18181c; border-radius: 3px; padding: 2px 3px; margin-bottom: 3px; }
+    .strip .send .top { display: flex; justify-content: space-between; gap: 4px; font-size: 10px; }
+    .strip .send .to { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .strip .send .sdb { color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
+    .strip .send .bot { display: flex; align-items: center; gap: 2px; }
+    .strip .send input { flex: 1; min-width: 0; height: 12px; margin: 0; accent-color: #9ab; }
+    .strip .send button { flex: none; width: 16px; padding: 0; font-size: 9px; font-weight: 600; border-radius: 2px; border: 1px solid var(--line); background: var(--raised); cursor: pointer; }
+    .strip .send .smute.on { background: var(--mute); border-color: var(--mute); color: #fff; }
+    .strip .send .spre.on { background: #3d6fd1; border-color: #3d6fd1; color: #fff; }
+    .strip .send.muted .top { opacity: .5; }
+    .strip.wide .pans .pan { height: 16px; }
+    .strip.wide .lane { margin: 0 4px; }
+    body.tiny .strip.wide .buttons { flex-direction: row; }
+
+    /* Pin: keeps a channel wide. Shown on hover, always when pinned. */
+    .strip .pin { position: absolute; top: -3px; right: -1px; width: 14px; height: 14px; padding: 0; border: 0; border-radius: 3px; background: rgba(20,20,24,.85); color: var(--dim); cursor: pointer; display: none; align-items: center; justify-content: center; }
+    .strip:hover .pin, .strip .pin.on { display: flex; }
+    .strip .pin.on { color: var(--accent); }
+    .strip .pin:hover { color: #fff; }
+    .strip.wide .head { display: flex; align-items: center; gap: 4px; }
+    .strip.wide .pin { position: static; display: flex; flex: none; }
+    .strip.pinned { border-color: rgba(242,193,78,.6); }
+    .strip.pinned.selected { border-color: var(--sel); }
+
+
+    /* Plugin names open the plugin window. */
+    .strip .ins .pname { display: flex; align-items: center; gap: 3px; }
+    .strip .ins .pname .pt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .strip .ins .pname .open-ic { flex: none; font-size: 9px; color: var(--dim); }
+    .strip .ins .pname:hover .open-ic, .strip .ins .pname.open .open-ic { color: var(--accent); }
+
+    /* EQ viewer */
+    .strip .eqsec .h { justify-content: flex-start; gap: 5px; align-items: center; }
+    .strip .sec .h .eqname { text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; }
+    .strip .eq .g { stroke: rgba(255,255,255,.07); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .strip .eq .z { stroke: rgba(255,255,255,.22); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .strip .eq .curve { fill: none; stroke: #7fc4ff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .strip .eq .fill { fill: rgba(127,196,255,.14); stroke: none; }
+    .strip .eq.off .curve { stroke: #555; }
+    .strip .eq .eqnote { font-size: 9px; color: #8a7a5a; margin-top: 2px; }
+
+    /* Transport */
+    header.transport { gap: 10px; padding: 5px 8px; background: #18181c; }
+    .tgroup { display: flex; gap: 3px; }
+    .tbtn { width: 30px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 11px; line-height: 1; background: var(--raised); border: 1px solid var(--line); border-radius: 5px; cursor: pointer; color: #cfcfd6; }
+    .tbtn:hover { border-color: #4a4a52; color: #fff; }
+    #play.on { background: #2f9e57; border-color: #2f9e57; color: #fff; }
+    .tbtn { color: #e6e6ea; }
+    .tbtn.wide { width: auto; padding: 0 9px; }
+    #lunaMixer.on { background: var(--sel); border-color: var(--sel); color: #fff; }
+    #lunaMixer[hidden] { display: none; }
+    #rec { color: #e6e6ea; }
+    #rec:hover { color: #ff6b6b; }
+    #rec.on { background: #c33; border-color: #c33; color: #fff; }
+    #rec.on.waiting { animation: blink 1s steps(2, start) infinite; }
+    @keyframes blink { to { background: var(--raised); color: #ff6b6b; } }
+    #loop.on { background: #2f6fd1; border-color: #2f6fd1; color: #fff; }
+    .clock { display: flex; flex-direction: column; align-items: flex-start; min-width: 92px; padding: 1px 8px; background: #0d0d10; border: 1px solid var(--line); border-radius: 5px; font-variant-numeric: tabular-nums; }
+    #barbeat { font: 600 16px/1.1 Menlo, ui-monospace, monospace; color: var(--accent); }
+    #minsec { font: 10px/1.2 Menlo, ui-monospace, monospace; color: var(--dim); }
+    .tinfo { display: flex; flex-direction: column; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; line-height: 1.3; }
+    #tempo { color: var(--text); }
+
+    /* Move buttons on wide strips */
+    .strip .mv { flex: none; width: 16px; height: 16px; padding: 0; font-size: 9px; line-height: 1; border: 1px solid var(--line); border-radius: 3px; background: var(--raised); color: var(--dim); cursor: pointer; }
+    .strip .mv:hover:not([disabled]) { color: #fff; border-color: #555; }
+    .strip .mv[disabled] { opacity: .3; cursor: default; }
+    .strip.moved { animation: moved .5s ease-out; }
+    @keyframes moved { from { box-shadow: 0 0 0 2px var(--accent); } to { box-shadow: 0 0 0 2px transparent; } }
+
+    /* Editable EQ */
+    .strip .eq .eqarea { position: relative; height: 64px; background: #101013; border-radius: 3px; touch-action: none; }
+    .strip .eq svg, .eqoverlay .eq svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: transparent; }
+    .eq .g { stroke: rgba(255,255,255,.06); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .eq .g2 { stroke: rgba(255,255,255,.13); }
+    .eq .nodes { position: absolute; inset: 0; pointer-events: none; }
+    .eq .pt { position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px; border-radius: 50%; background: #7fc4ff; border: 1.5px solid #0e0e11; pointer-events: auto; cursor: grab; touch-action: none; }
+    .eq .pt:hover, .eq .pt.drag { background: var(--accent); transform: scale(1.35); }
+    .eq .pt.drag { cursor: grabbing; }
+    .eq .pt.nogain { background: #9aa4b2; border-radius: 2px; }
+    .eq .pt.hpf, .eq .pt.lpf { width: 8px; height: 8px; margin: -4px 0 0 -4px; }
+    .strip .eqbig { margin-left: auto; width: 15px; height: 13px; padding: 0; font-size: 9px; line-height: 1; border: 1px solid var(--line); border-radius: 3px; background: var(--raised); color: var(--dim); cursor: pointer; }
+    .strip .eqbig:hover { color: #fff; }
+    .eqoverlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 50; }
+    .eqpanel { width: min(720px, 92vw); background: #1c1c21; border: 1px solid #34343c; border-radius: 8px; padding: 10px 12px 12px; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+    .eqtop { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+    .eqtop .t { font-weight: 600; font-size: 13px; }
+    .eqtop .eqname { color: var(--dim); font-size: 11px; flex: 1; }
+    .eqtop .x { background: none; border: 0; color: var(--dim); cursor: pointer; font-size: 13px; }
+    .eqoverlay .eq .eqarea { position: relative; height: min(300px, 52vh); background: #0f0f12; border-radius: 5px; }
+    .eqoverlay .eq .curve { stroke-width: 2; }
+    .eqoverlay .eq .pt { width: 13px; height: 13px; margin: -7px 0 0 -7px; }
+    .eqoverlay .bands { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px; color: #c8c8d0; font-variant-numeric: tabular-nums; }
+    .eqoverlay .hint { margin-top: 6px; font-size: 10px; color: var(--dim); }
+    .eqoverlay .eqnote { font-size: 10px; color: #8a7a5a; margin-top: 4px; }
+    .eq .curve { fill: none; stroke: #7fc4ff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .eq .fill { fill: rgba(127,196,255,.14); stroke: none; }
+    .eq .z { stroke: rgba(255,255,255,.25); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .eq.off .curve { stroke: #555; }
+
+    /* dB ruler: one scale at the left, lined up with every lane (they all share the same height). */
+    #body { position: relative; }
+    #ruler { flex: none; width: 30px; position: relative; background: var(--bg); border-right: 1px solid var(--line); }
+    #ruler .rlane { position: absolute; left: 0; right: 0; }
+    #ruler .rmark { position: absolute; right: 5px; font-size: 9px; line-height: 1; transform: translateY(-50%); color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    #ruler .rmark::after { content: ''; position: absolute; right: -5px; top: 50%; width: 4px; border-top: 1px solid rgba(255,255,255,.3); }
+    #ruler .rmark.zero { color: var(--text); font-weight: 600; }
+    #ruler .rmark.minor { font-size: 0; }
+    #ruler .rmark.minor::after { width: 2px; border-top-color: rgba(255,255,255,.18); }
+    #ruler .hover { position: absolute; left: 1px; right: 1px; transform: translateY(-50%); font-size: 9px; line-height: 13px; text-align: center; border-radius: 3px; background: var(--accent); color: #111; font-weight: 600; display: none; z-index: 2; font-variant-numeric: tabular-nums; }
+    #ruler .hover.on { display: block; }
+    /* Hover line across the lane under the pointer. */
+    .lane .hline { position: absolute; left: -2px; right: -2px; height: 0; border-top: 1px dashed rgba(242,193,78,.8); pointer-events: none; display: none; z-index: 1; }
+    .lane:hover .hline { display: block; }
+    .lane.dragging .hline { display: none; }
+
+    /* Folded to a bar while LUNA's own Mixer shows: only the transport row stays. */
+    body.folded header.tools, body.folded #body, body.folded .tinfo, body.folded #status { display: none; }
+    body.folded header.transport { border-bottom: 0; }
+    .eq .pt { pointer-events: none; cursor: default; width: 7px; height: 7px; margin: -4px 0 0 -4px; }
+    .eqoverlay .eq .pt { width: 9px; height: 9px; margin: -5px 0 0 -5px; }
+
+    .strip .ins .pname .place { flex: none; font-size: 8px; text-transform: uppercase; letter-spacing: .04em; color: #111; background: #8fa3bf; border-radius: 2px; padding: 0 3px; }
+    .strip .ins.place-console .pname { background: #2a303b; }
+
+    #ruler .rhead { position: absolute; left: 0; right: 0; text-align: center; font-size: 8px; line-height: 1.15; font-weight: 700; letter-spacing: .04em; color: #7fc4ff; }
+    #ruler .rmark { color: #9fb6cc; }
+    #ruler .rmark.zero { color: #cfe6ff; }
+  </style>
+</head>
+<body>
+  <header class="transport">
+    <div class="tgroup">
+      <button id="rtz" class="tbtn" title="Return to zero"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2.5" y="3" width="2" height="10" rx=".5" fill="currentColor"/><path d="M13.5 3.2v9.6L5.6 8z" fill="currentColor"/></svg></button>
+      <button id="barBack" class="tbtn" title="Back one bar"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3.5v9L1.5 8zM14.5 3.5v9L8 8z" fill="currentColor"/></svg></button>
+      <button id="barFwd" class="tbtn" title="Forward one bar"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3.5v9L14.5 8zM1.5 3.5v9L8 8z" fill="currentColor"/></svg></button>
+      <button id="stop" class="tbtn" title="Stop"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1" fill="currentColor"/></svg></button>
+      <button id="play" class="tbtn" title="Play (Space)"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4.5 2.8v10.4L13.2 8z" fill="currentColor"/></svg></button>
+      <button id="rec" class="tbtn" title="Record"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="4.6" fill="currentColor"/></svg></button>
+      <button id="loop" class="tbtn" title="Loop"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8a4 4 0 0 1 4-4h4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M10.5 1.8 13 4l-2.5 2.2z" fill="currentColor"/><path d="M13 8a4 4 0 0 1-4 4H4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M5.5 14.2 3 12l2.5-2.2z" fill="currentColor"/></svg></button>
+    </div>
+    <button id="lunaMixer" class="tbtn wide" title="Show LUNA's own Mixer in the main window (click again for the Timeline)"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2v12M8 2v12M12 2v12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" opacity=".55"/><rect x="2.3" y="8.5" width="3.4" height="2.4" rx=".6" fill="currentColor"/><rect x="6.3" y="4.2" width="3.4" height="2.4" rx=".6" fill="currentColor"/><rect x="10.3" y="10" width="3.4" height="2.4" rx=".6" fill="currentColor"/></svg><span>LUNA Mixer</span></button>
+    <div class="clock"><div id="barbeat">1|1|000</div><div id="minsec">00:00.0</div></div>
+    <div class="tinfo"><span id="tempo">— BPM</span><span id="sig">-/-</span></div>
+    <div class="spacer"></div>
+    <span id="status">connecting…</span>
+  </header>
+  <header class="tools">
+    <input id="search" type="search" placeholder="Filter: vox, gtr…" spellcheck="false" autocomplete="off">
+    <div class="group" id="kinds"></div>
+    <div class="group" id="colors"></div>
+    <button id="reset" class="btn" title="Show every channel">Show all</button>
+    <span id="count"></span>
+    <div class="spacer"></div>
+    <button id="clearSolo" class="btn" title="Clear every solo (one undo step)">S 0</button>
+    <button id="unmute" class="btn" title="Unmute every channel (one undo step)">M 0</button>
+    <button id="density" class="btn" title="Strip width">⇔</button>
+  </header>
+  <div id="body">
+    <div id="ruler" title="Audio level scale of the meters, in dBFS (not the fader position: the fader value is the number under each lane)"><div class="rlane"></div></div>
+    <div id="strips"></div>
+    <div id="masterBox"></div>
+  </div>
+  <script src="vendor/luna.global.js"></script>
+  <script src="logic.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

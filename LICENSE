@@ -1,0 +1,29 @@
+Compact Mixer — a LUNA Add On
+Copyright (c) 2026 Fede Trillo. All rights reserved.
+
+This software (the source code, the packaged .lunaaddon file, its design and its icon) is the
+property of Fede Trillo. It is made public only so that it can be listed in, installed from and
+reviewed for the LUNA Add On marketplace.
+
+You MAY:
+  - download, install and use the Add On in Universal Audio's LUNA, for personal or
+    professional work, free of charge;
+  - read the source code.
+
+You MAY NOT, without prior written permission from Fede Trillo:
+  - copy, modify, adapt, translate or create derivative works from this software or any part
+    of it;
+  - redistribute, publish, sublicense, sell or offer it, modified or not, by any means,
+    including as part of another Add On or product;
+  - remove or change this notice.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+Third-party code: vendor/luna.global.js is Universal Audio's @uaudio/luna-builder-sdk, licensed
+under the Apache License, Version 2.0, and is not covered by this licence. See
+THIRD_PARTY_NOTICES.md.
+
+Contact: fedetrillo@gmail.com
