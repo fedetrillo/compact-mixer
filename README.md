@@ -39,7 +39,7 @@ tracks and their buses on one screen.
   Dragging any fader of a group moves the others by the same dB, keeping their balance. Mute,
   solo and Option/Alt-click or double-click (back to 0 dB) also act on the whole group. Hold
   Option/Alt while dragging to move one fader alone; the Groups button suspends every group.
-- **Look (◐ in the toolbar):** dark or grey theme, and how much of each channel's colour fills
+- **Look (◐ in the toolbar):** dark or grey theme, the add-on's colour (yellow, orange, red, green, blue, pink or purple), and how much of each channel's colour fills
   its strip (0-60%).
 - **Channel colours:** click a strip's colour bar, or right-click its name, to pick one of 24
   colours. With several channels selected, they all take it, as one undo step.

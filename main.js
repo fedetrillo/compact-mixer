@@ -13,16 +13,18 @@
 
   // ---- Remembered view state (per viewer, namespaced by the Add On id) -----------------------
   const STORE_KEY = 'com.fedetrillo.compact_mixer.view';
+  // The add-on's own colour, picked under the Look button.
+  const ACCENTS = [['yellow', 'Yellow', '#ffd23f', '#f5a623'], ['orange', 'Orange', '#ffa94d', '#ff6b3d'], ['red', 'Red', '#ff6b6b', '#e0334f'], ['green', 'Green', '#2ee6a6', '#9be14a'], ['blue', 'Blue', '#4cc3ff', '#5b6cff'], ['pink', 'Pink', '#ff86c8', '#ff4f8b'], ['purple', 'Purple', '#c08bff', '#7b5cff']];
   const loadView = () => {
     try {
       const v = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-      if (v && Array.isArray(v.kinds)) return { filter: { ...AddOnLogic.emptyFilter(), ...v.filter, kinds: v.kinds }, tiny: !!v.tiny, grey: !!v.grey, tint: Number.isFinite(v.tint) ? v.tint : 0 };
+      if (v && Array.isArray(v.kinds)) return { filter: { ...AddOnLogic.emptyFilter(), ...v.filter, kinds: v.kinds }, tiny: !!v.tiny, grey: !!v.grey, tint: Number.isFinite(v.tint) ? v.tint : 0, color: ACCENTS.some(([c]) => c === v.color) ? v.color : 'yellow' };
     } catch { /* storage unavailable or corrupt: start fresh */ }
-    return { filter: AddOnLogic.emptyFilter(), tiny: false, grey: false, tint: 0 };
+    return { filter: AddOnLogic.emptyFilter(), tiny: false, grey: false, tint: 0, color: 'yellow' };
   };
   const view = loadView();
   const saveView = () => {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify({ filter: { query: view.filter.query, color: view.filter.color }, kinds: view.filter.kinds, tiny: view.tiny, grey: view.grey, tint: view.tint })); }
+    try { localStorage.setItem(STORE_KEY, JSON.stringify({ filter: { query: view.filter.query, color: view.filter.color }, kinds: view.filter.kinds, tiny: view.tiny, grey: view.grey, tint: view.tint, color: view.color })); }
     catch { /* not fatal */ }
   };
   // Pinned (always wide) channels, per session.
@@ -66,6 +68,7 @@
   // Theme: dark (black background) or grey (a lighter grey background), kept with the view.
   const applyTheme = () => {
     document.body.classList.toggle('grey', view.grey);
+    document.body.dataset.color = view.color;
     $('theme').title = 'Look: theme (dark or grey) and how much colour fills each strip';
     $('theme').classList.toggle('on', view.grey);
   };
@@ -74,6 +77,8 @@
     const p = openPop($('theme'), 'menu look');
     p.el.innerHTML = `<div class="chead">Theme</div>
       <div class="seg"><button data-t="dark">Dark</button><button data-t="grey">Grey</button></div>
+      <div class="chead">Colour</div>
+      <div class="accs">${ACCENTS.map(([c, name, a, b]) => `<button data-c="${c}" title="${name}" aria-label="${name}" style="background:linear-gradient(135deg,${a},${b})"></button>`).join('')}</div>
       <div class="chead">Strip colour <span class="tv"></span></div>
       <input class="tint" type="range" min="0" max="60" step="1">
       <div class="thint">How much of each channel's colour fills its strip</div>`;
@@ -81,6 +86,10 @@
     const mark = () => seg.forEach((b) => b.classList.toggle('on', (b.dataset.t === 'grey') === view.grey));
     seg.forEach((b) => { b.onclick = () => { view.grey = b.dataset.t === 'grey'; applyTheme(); saveView(); mark(); }; });
     mark();
+    const accs = p.el.querySelectorAll('.accs button');
+    const markC = () => accs.forEach((b) => b.classList.toggle('on', b.dataset.c === view.color));
+    accs.forEach((b) => { b.onclick = () => { view.color = b.dataset.c; applyTheme(); saveView(); markC(); }; });
+    markC();
     const r = p.el.querySelector('.tint'), tv = p.el.querySelector('.tv');
     r.value = String(view.tint ?? 0);
     const show = () => { tv.textContent = `${r.value}%`; };
@@ -1273,7 +1282,7 @@
   // ---- Name and version ----------------------------------------------------------------------
   // Written here (a test checks it matches manifest.json). Updates come through LUNA's own Add On
   // marketplace notice, so the page asks no server.
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const showVersion = () => { $('appver').textContent = `v${VERSION}`; };
 
   // ---- Start ---------------------------------------------------------------------------------

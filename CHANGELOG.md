@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0 — 2026-11-24
+
+### Changed
+- **New look**, in line with the newer add-ons: rounded strips, lanes and buttons, grouped
+  transport, gradient highlights, a clock in the add-on's colour and softer pop-ups. Same layout
+  and density: as many channels fit on screen as before.
+
+### Added
+- **Colour:** pick the add-on's colour under the Look button (◐): yellow, orange, red, green,
+  blue, pink or purple. It tints the selected strip, the fader caps, the EQ curve, pan and send
+  sliders and the active buttons, and is remembered with the theme.
+
 ## 1.1.0 — 2026-11-21
 
 ### Added
