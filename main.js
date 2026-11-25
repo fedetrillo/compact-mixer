@@ -1282,7 +1282,7 @@
   // ---- Name and version ----------------------------------------------------------------------
   // Written here (a test checks it matches manifest.json). Updates come through LUNA's own Add On
   // marketplace notice, so the page asks no server.
-  const VERSION = '1.2.1';
+  const VERSION = '1.2.2';
   const showVersion = () => { $('appver').textContent = `v${VERSION}`; };
 
 

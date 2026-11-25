@@ -3,15 +3,10 @@
     "id": "com.fedetrillo.compact_mixer",
     "title": "Compact Mixer",
     "name": "Compact Mixer",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "manufacturer": "Fede Trillo",
     "contact": "fedetrillo@gmail.com",
-    "description": [
-        "A narrow mixer for big sessions, in a floating window: 80+ channels on one screen. ",
-        "Each fader lane is also its meter, on LUNA's audio scale, with a dB ruler. ",
-        "The selected channel (or any pinned one) opens wide with inserts, an EQ curve, sends and pan. ",
-        "Filter by name, kind or colour, move channels in LUNA's order, transport bar, and a button to swap to LUNA's own Mixer."
-    ],
+    "description": "Mix 80+ channels without scrolling. A narrow floating mixer where every fader is also its meter; the selected channel opens wide with inserts, EQ curve and sends, and filters by name, kind or colour find any channel in a second. Snapshots, fader groups and a transport bar. Getting-started guide, 7 languages.",
     "categories": [
         "Mixing & Mastering"
     ],

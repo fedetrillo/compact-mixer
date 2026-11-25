@@ -3,7 +3,10 @@
 A narrow mixer for big LUNA sessions, in a floating window. On a large monitor it shows 80+
 tracks and their buses on one screen.
 
-![Compact Mixer](icon.png)
+<p>
+  <img src="docs/screenshot-dark.png" alt="Compact Mixer, dark theme" width="460">
+  <img src="docs/screenshot-grey.png" alt="Compact Mixer, grey theme" width="460">
+</p>
 
 ## Features
 

@@ -1,7 +1,7 @@
 {
   "name": "compact_mixer",
   "private": true,
-  "version": "1.2.1",
+  "version": "1.2.2",
   "type": "module",
   "description": "Compact Mixer, a LUNA Add On by Fede Trillo",
   "scripts": {

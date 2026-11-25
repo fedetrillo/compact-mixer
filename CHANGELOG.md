@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.2 — 2026-11-25
+
+- Screenshots of the dark and grey themes in the package and the README, and a shorter
+  description that starts with what it does for you.
+
 ## 1.2.1 — 2026-11-25
 
 ### Added
