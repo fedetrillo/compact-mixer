@@ -59,6 +59,12 @@ tracks and their buses on one screen.
 
 Every fader, pan and send drag is one undo step in LUNA.
 
+## Quick guide
+
+The first time it opens, a short guide walks you through the window, in the language you choose
+first (English, Español, Català, Français, Deutsch, Italiano or Português). The **Guide** button in
+the transport bar brings it back whenever you need it.
+
 ## Updates
 
 The top bar shows the name and version. New versions arrive through LUNA's Add On

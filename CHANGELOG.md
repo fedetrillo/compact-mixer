@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1 — 2026-11-25
+
+### Added
+- **Quick guide:** the first time it opens, a short guide walks you through the window in the
+  language you choose first (seven languages). The **Guide** button in the transport bar brings
+  it back.
+
 ## 1.2.0 — 2026-11-24
 
 ### Changed

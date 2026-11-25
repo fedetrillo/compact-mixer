@@ -154,7 +154,7 @@
     /* Name and version */
     #about { flex: none; display: inline-flex; align-items: center; gap: 5px; padding-left: 10px; margin-left: 4px; border-left: 1px solid var(--line); color: var(--dim); font-size: 10.5px; white-space: nowrap; }
     #appname { color: #b9b9c2; font-weight: 600; }
-    body.folded #about { display: none; }
+    body.folded #about, body.folded #help { display: none; }
 
     /* Folders: nesting bands and the fold button */
     .strip .nest { align-self: stretch; margin: 0 -2px -2px; display: flex; flex-direction: column; gap: 2px; padding-bottom: 2px; border-bottom: 1px solid #0f0f12; }
@@ -522,6 +522,7 @@
     <div class="clock"><div id="barbeat">1|1|000</div><div id="minsec">00:00.0</div></div>
     <div class="tinfo"><span id="tempo">— BPM</span><span id="sig">-/-</span></div>
     <div class="spacer"></div>
+    <button id="help"></button>
     <span id="status">connecting…</span>
     <span id="about"><span id="appname">Compact Mixer</span> <span id="appver"></span></span>
   </header>
@@ -545,6 +546,7 @@
     <div id="masterBox"></div>
   </div>
   <script src="vendor/luna.global.js"></script>
+  <script src="tour.js"></script>
   <script src="logic.js"></script>
   <script src="main.js"></script>
 </body>
