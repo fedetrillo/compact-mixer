@@ -1282,8 +1282,18 @@
   // ---- Name and version ----------------------------------------------------------------------
   // Written here (a test checks it matches manifest.json). Updates come through LUNA's own Add On
   // marketplace notice, so the page asks no server.
-  const VERSION = '1.2.2';
+  const VERSION = '1.2.3';
   const showVersion = () => { $('appver').textContent = `v${VERSION}`; };
+  // Alt-click on the version copies a report to send when something looks wrong.
+  const errors = [];
+  window.addEventListener('error', (e) => { errors.push(String(e.message)); errors.splice(0, errors.length - 10); });
+  $('appver').title = 'Alt-click: copy a report';
+  $('appver').addEventListener('click', async (ev) => {
+    if (!ev.altKey) return;
+    const chans = session ? session.tracks.items.map((tk) => ({ name: tk.name.value, kind: tk.trackType?.value ?? null, fx: (tk.loadedEffects ?? []).map((f) => f.name?.value ?? null) })) : [];
+    const text = JSON.stringify({ addOn: 'Compact Mixer', version: VERSION, luna: luna?.version?.value ?? null, platform: navigator.platform, ua: navigator.userAgent, window: window.AddOnWinFit?.info?.() ?? null, view, session: session?.name.value ?? null, channels: chans.length, chans: chans.slice(0, 64), errors }, null, 2);
+    try { if (await AddOnCopy(text)) say('Report copied: paste it in a message to the developer'); } catch { /* nothing */ }
+  });
 
 
   // ---- Quick guide ---------------------------------------------------------------------------

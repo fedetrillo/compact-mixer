@@ -3,7 +3,7 @@
     "id": "com.fedetrillo.compact_mixer",
     "title": "Compact Mixer",
     "name": "Compact Mixer",
-    "version": "1.2.2",
+    "version": "1.2.3",
     "manufacturer": "Fede Trillo",
     "contact": "fedetrillo@gmail.com",
     "description": "Mix 80+ channels without scrolling. A narrow floating mixer where every fader is also its meter; the selected channel opens wide with inserts, EQ curve and sends, and filters by name, kind or colour find any channel in a second. Snapshots, fader groups and a transport bar. Getting-started guide, 7 languages.",

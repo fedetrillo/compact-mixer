@@ -1,7 +1,8 @@
 # Compact Mixer for LUNA
 
-A narrow mixer for big LUNA sessions, in a floating window. On a large monitor it shows 80+
-tracks and their buses on one screen.
+Mix 80+ channels without scrolling. A narrow floating mixer where every fader is also its meter;
+the selected channel opens wide with inserts, EQ curve and sends, and filters by name, kind or
+colour find any channel in a second. Snapshots, fader groups and a transport bar.
 
 <p>
   <img src="docs/screenshot-dark.png" alt="Compact Mixer, dark theme" width="460">
@@ -77,6 +78,11 @@ marketplace, which tells you when there is an update.
 
 The user manual, in English and Spanish with screenshots:
 [docs/Compact-Mixer-Manual.pdf](docs/Compact-Mixer-Manual.pdf). It is also attached to each release.
+
+## Support
+
+If something does not work as expected, Alt-click the version number at the top of the window:
+it copies a short report to paste in a message to fedetrillo@gmail.com.
 
 ## Install
 
